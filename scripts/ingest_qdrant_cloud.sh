@@ -37,7 +37,7 @@ INGEST_ARGS=(
   --source-dir "$DATA_DIR"
   --build-dir "$BUILD_DIR"
   --model-cache-dir "$MODEL_CACHE_DIR"
-  --batch-size "${R2AI_BATCH_SIZE:64}"
+  --batch-size "${R2AI_BATCH_SIZE:-64}"
   --max-chunk-tokens "${R2AI_MAX_CHUNK_TOKENS:-2048}"
   --chunk-overlap-tokens "${R2AI_CHUNK_OVERLAP_TOKENS:-256}"
 )
