@@ -120,16 +120,26 @@ def _qdrant_preview_path(build_dir: Path) -> Path:
     return build_dir / "qdrant_payload_preview.jsonl"
 
 
+def _preferred_torch_device() -> str:
+    try:
+        import torch
+    except ImportError:
+        return "cpu"
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
 def _load_dense_model(model_name: str, cache_dir: Path | None) -> Any:
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:
         raise RuntimeError("sentence-transformers is required for dense embeddings. Install the ingest extra.") from exc
 
-    kwargs = {"cache_folder": str(cache_dir)} if cache_dir else {}
-    st = SentenceTransformer(model_name, **kwargs)
-    st.max_seq_length = 2048
-    return SentenceTransformer(model_name, **kwargs)
+    kwargs: dict[str, Any] = {"device": _preferred_torch_device()}
+    if cache_dir:
+        kwargs["cache_folder"] = str(cache_dir)
+    model = SentenceTransformer(model_name, **kwargs)
+    model.max_seq_length = 2048
+    return model
 
 
 def _load_sparse_model(model_name: str, cache_dir: Path | None) -> Any:
