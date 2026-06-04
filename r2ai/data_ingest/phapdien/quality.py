@@ -34,6 +34,10 @@ def build_quality_report(
             ),
             "max_chunk_count": max((unit["chunk_count"] for unit in units), default=0),
         },
+        "chunking": {
+            "method_distribution": dict(Counter(unit.get("chunk_method", "") for unit in units).most_common()),
+            "with_tree_path": sum(1 for unit in units if unit.get("content_tree_path")),
+        },
         "duplicates": {
             "canonical_article_ids": [item for item, count in Counter(canonical_ids).items() if count > 1],
             "article_anchors": [item for item, count in Counter(anchors).items() if count > 1],

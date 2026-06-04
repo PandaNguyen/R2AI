@@ -7,16 +7,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from r2ai.data_ingest.phapdien.constants import DEFAULT_CHUNK_OVERLAP_TOKENS, DEFAULT_MAX_CHUNK_TOKENS
 from r2ai.data_ingest.phapdien.io import load_csv_rows, load_parquet_rows, write_json, write_jsonl
 from r2ai.data_ingest.phapdien.qdrant_payload import make_qdrant_preview
 from r2ai.data_ingest.phapdien.quality import build_quality_report
-from r2ai.data_ingest.phapdien.records import canonical_hash_basis, canonicalize_article, make_retrieval_units
+from r2ai.data_ingest.phapdien.records import (
+    build_retrieval_text,
+    build_source_title_map,
+    canonical_hash_basis,
+    canonicalize_article,
+    make_retrieval_units,
+)
 
 
 @dataclass(frozen=True)
 class BuildPaths:
     source_dir: Path
     output_dir: Path
+    max_chunk_tokens: int = DEFAULT_MAX_CHUNK_TOKENS
+    chunk_overlap_tokens: int = DEFAULT_CHUNK_OVERLAP_TOKENS
 
 
 def build_phapdien_data(paths: BuildPaths) -> dict[str, Any]:
@@ -34,7 +43,22 @@ def build_phapdien_data(paths: BuildPaths) -> dict[str, Any]:
         disambiguator = basis_counts[basis]
         basis_counts[basis] += 1
         articles.append(canonicalize_article(row, disambiguator=disambiguator))
-    units = [unit for article in articles for unit in make_retrieval_units(article)]
+    source_title_by_law_code = build_source_title_map(articles)
+    for article in articles:
+        article["retrieval_text"] = build_retrieval_text(
+            article,
+            source_title_by_law_code=source_title_by_law_code,
+        )
+    units = [
+        unit
+        for article in articles
+        for unit in make_retrieval_units(
+            article,
+            max_chunk_tokens=paths.max_chunk_tokens,
+            chunk_overlap_tokens=paths.chunk_overlap_tokens,
+            source_title_by_law_code=source_title_by_law_code,
+        )
+    ]
     qdrant_preview = [make_qdrant_preview(unit) for unit in units]
 
     write_jsonl(paths.output_dir / "articles.jsonl", articles)

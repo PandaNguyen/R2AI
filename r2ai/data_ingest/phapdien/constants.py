@@ -8,6 +8,9 @@ LONG_ARTICLE_CHARS = 3000
 TARGET_CHUNK_CHARS = 1600
 CHUNK_OVERLAP_CHARS = 200
 CONTENT_PREVIEW_CHARS = 500
+DEFAULT_MAX_CHUNK_TOKENS = 384
+DEFAULT_CHUNK_OVERLAP_TOKENS = 48
+MIN_LEAF_SPLIT_TOKENS = 80
 
 LAW_ID_PATTERN = re.compile(
     r"\b\d{1,4}/(?:\d{4}/)?(?:QH\d+|NĐ-CP|ND-CP|TT-[A-ZĐ]+|QĐ-[A-ZĐ]+|QD-[A-ZĐ]+|"
@@ -20,3 +23,7 @@ SECTION_BOUNDARY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 SENTENCE_BOUNDARY_PATTERN = re.compile(r"(?<=[.!?])\s+")
+STRUCTURE_MARKER_PATTERN = re.compile(
+    r"(?:(?<=^)|(?<=\s))(?P<label>\d+(?:\.\d+)*\.|[a-zđ]\)|[a-zđ]\.)\s+",
+    re.IGNORECASE,
+)
