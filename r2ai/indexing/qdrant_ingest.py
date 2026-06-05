@@ -152,13 +152,13 @@ def _load_sparse_model(model_name: str, cache_dir: Path | None) -> Any:
     return SparseTextEmbedding(model_name=model_name, **kwargs)
 
 
-def _make_qdrant_client(qdrant_url: str, qdrant_api_key: str) -> tuple[Any, Any]:
+def _make_qdrant_client(qdrant_url: str, qdrant_api_key: str, timeout: float = 120) -> tuple[Any, Any]:
     try:
         from qdrant_client import QdrantClient, models
     except ImportError as exc:
         raise RuntimeError("qdrant-client is required for Qdrant ingestion. Install the ingest extra.") from exc
 
-    return QdrantClient(url=qdrant_url, api_key=qdrant_api_key, timeout=120), models
+    return QdrantClient(url=qdrant_url, api_key=qdrant_api_key, timeout=timeout), models
 
 
 def _ensure_collection(

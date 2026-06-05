@@ -29,6 +29,12 @@ ingest = [
   "sentence-transformers>=3.0.0",
   "tiktoken>=0.8.0",
 ]
+search = [
+  "fastembed>=0.7.0",
+  "numpy>=1.26.0",
+  "qdrant-client>=1.16.0",
+  "sentence-transformers>=3.0.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["r2ai"]

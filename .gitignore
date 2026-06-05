@@ -17,3 +17,6 @@ Challenge.md
 .cache/
 models/
 output.json
+.code-review-graph
+*.zip
+results*.json
