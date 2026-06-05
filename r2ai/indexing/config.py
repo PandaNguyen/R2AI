@@ -19,6 +19,7 @@ DEFAULT_PREFETCH_LIMIT = 20
 DEFAULT_SEARCH_MODE = "hybrid"
 DEFAULT_SEARCH_QDRANT_TIMEOUT = 30.0
 DEFAULT_DOC_TITLE_FORMAT = "type1"
+DEFAULT_ANSWER_ARTICLE_LIMIT: int | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,7 @@ class QdrantSearchConfig:
     prefetch_limit: int = DEFAULT_PREFETCH_LIMIT
     qdrant_timeout: float = DEFAULT_SEARCH_QDRANT_TIMEOUT
     doc_title_format: str = DEFAULT_DOC_TITLE_FORMAT
+    answer_article_limit: int | None = DEFAULT_ANSWER_ARTICLE_LIMIT
     model_cache_dir: Path | None = None
     query_vector: list[float] | None = None
     query_instruction: str = DEFAULT_QUERY_INSTRUCTION
@@ -117,6 +119,7 @@ class QdrantSearchConfig:
         prefetch_limit: int = DEFAULT_PREFETCH_LIMIT,
         qdrant_timeout: float = DEFAULT_SEARCH_QDRANT_TIMEOUT,
         doc_title_format: str = DEFAULT_DOC_TITLE_FORMAT,
+        answer_article_limit: int | None = DEFAULT_ANSWER_ARTICLE_LIMIT,
         model_cache_dir: Path | None = None,
         query_vector: list[float] | None = None,
         query_instruction: str = DEFAULT_QUERY_INSTRUCTION,
@@ -145,6 +148,7 @@ class QdrantSearchConfig:
             prefetch_limit=prefetch_limit,
             qdrant_timeout=qdrant_timeout,
             doc_title_format=doc_title_format,
+            answer_article_limit=answer_article_limit,
             model_cache_dir=model_cache_dir,
             query_vector=query_vector,
             query_instruction=query_instruction,

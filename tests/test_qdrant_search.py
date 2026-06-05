@@ -272,6 +272,37 @@ class QdrantSearchTests(unittest.TestCase):
             ["04/2017/QH14|Luật 04/2017/QH14 Hỗ trợ doanh nghiệp nhỏ và vừa"],
         )
 
+    def test_answer_article_limit_only_limits_answer_patterns(self) -> None:
+        result = {
+            "search_mode": "dense",
+            "doc_title_format": "type2",
+            "answer_article_limit": 1,
+            "results": [
+                {
+                    "id": "point-1",
+                    "score": 0.9,
+                    "payload": {
+                        "retrieval_text": "Luật số 04/2017/QH14 hỗ trợ doanh nghiệp nhỏ và vừa Điều 4 Điều kiện hỗ trợ:\nNội dung",
+                        "source_law_id_candidates": ["04/2017/QH14"],
+                    },
+                },
+                {
+                    "id": "point-2",
+                    "score": 0.8,
+                    "payload": {
+                        "retrieval_text": "Luật số 04/2017/QH14 hỗ trợ doanh nghiệp nhỏ và vừa Điều 5 Nguyên tắc hỗ trợ:\nNội dung",
+                        "source_law_id_candidates": ["04/2017/QH14"],
+                    },
+                },
+            ],
+        }
+
+        row = format_competition_row({"id": 1, "question": "Điều kiện hỗ trợ SME?"}, result)
+
+        self.assertEqual(len(row["relevant_articles"]), 2)
+        self.assertIn("Điều 4", row["answer"])
+        self.assertNotIn("Điều 5", row["answer"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,7 @@ from r2ai.data_ingest.phapdien import BuildPaths, build_phapdien_data
 from r2ai.data_ingest.phapdien.download import ensure_phapdien_data
 from r2ai.indexing.config import (
     DEFAULT_COLLECTION,
+    DEFAULT_ANSWER_ARTICLE_LIMIT,
     DEFAULT_DENSE_MODEL,
     DEFAULT_DOC_TITLE_FORMAT,
     DEFAULT_PREFETCH_LIMIT,
@@ -89,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--prefetch-limit", type=int, default=DEFAULT_PREFETCH_LIMIT)
     search.add_argument("--qdrant-timeout", type=float, default=DEFAULT_SEARCH_QDRANT_TIMEOUT)
     search.add_argument("--doc-title-format", choices=["type1", "type2"], default=DEFAULT_DOC_TITLE_FORMAT)
+    search.add_argument("--answer-article-limit", type=int, default=DEFAULT_ANSWER_ARTICLE_LIMIT)
     search.add_argument("--model-cache-dir", type=Path, default=None)
     search.add_argument("--query-embedding", type=Path, default=None, help="Optional .npy vector for this query")
     search.add_argument("--query-instruction", default="", help="Optional prefix for on-the-fly dense embedding")
@@ -112,6 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--prefetch-limit", type=int, default=DEFAULT_PREFETCH_LIMIT)
     submit.add_argument("--qdrant-timeout", type=float, default=DEFAULT_SEARCH_QDRANT_TIMEOUT)
     submit.add_argument("--doc-title-format", choices=["type1", "type2"], default=DEFAULT_DOC_TITLE_FORMAT)
+    submit.add_argument("--answer-article-limit", type=int, default=DEFAULT_ANSWER_ARTICLE_LIMIT)
     submit.add_argument("--model-cache-dir", type=Path, default=None)
     submit.add_argument("--query-embeddings", type=Path, default=None, help="Optional .npy matrix aligned to questions")
     submit.add_argument("--query-instruction", default="", help="Optional prefix for on-the-fly dense embedding")
@@ -204,6 +207,7 @@ def main() -> None:
                 prefetch_limit=args.prefetch_limit,
                 qdrant_timeout=args.qdrant_timeout,
                 doc_title_format=args.doc_title_format,
+                answer_article_limit=args.answer_article_limit,
                 model_cache_dir=args.model_cache_dir,
                 query_vector=query_vector,
                 query_instruction=args.query_instruction,
@@ -236,6 +240,7 @@ def main() -> None:
                 prefetch_limit=args.prefetch_limit,
                 qdrant_timeout=args.qdrant_timeout,
                 doc_title_format=args.doc_title_format,
+                answer_article_limit=args.answer_article_limit,
                 model_cache_dir=args.model_cache_dir,
                 query_instruction=args.query_instruction,
                 topic_title=args.topic_title,

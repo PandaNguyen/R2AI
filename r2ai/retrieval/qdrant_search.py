@@ -134,6 +134,7 @@ def search_qdrant(
         "top_k": config.top_k,
         "prefetch_limit": search_limit,
         "doc_title_format": config.doc_title_format,
+        "answer_article_limit": config.answer_article_limit,
         "used_precomputed_dense_vector": config.query_vector is not None,
         "filters": summarize_filters(config),
         "results": results,
@@ -265,6 +266,7 @@ def search_qdrant_dense_batch(
                 "top_k": config.top_k,
                 "prefetch_limit": max(config.top_k, config.prefetch_limit),
                 "doc_title_format": config.doc_title_format,
+                "answer_article_limit": config.answer_article_limit,
                 "used_precomputed_dense_vector": True,
                 "filters": summarize_filters(config),
                 "results": ranked_points_to_results(_response_points(response), source="dense"),
@@ -336,6 +338,7 @@ def search_qdrant_sparse_or_hybrid_batch(
                 "top_k": config.top_k,
                 "prefetch_limit": search_limit,
                 "doc_title_format": config.doc_title_format,
+                "answer_article_limit": config.answer_article_limit,
                 "used_precomputed_dense_vector": query_vectors is not None,
                 "filters": summarize_filters(config),
                 "results": ranked_points_to_results(
@@ -535,6 +538,7 @@ def format_competition_row(question: dict[str, Any], result: dict[str, Any]) -> 
     seen_docs: set[str] = set()
     seen_articles: set[str] = set()
     doc_title_format = result.get("doc_title_format", "type1")
+    answer_article_limit = result.get("answer_article_limit")
 
     for item in result["results"]:
         payload = item.get("payload") or {}
@@ -547,7 +551,9 @@ def format_competition_row(question: dict[str, Any], result: dict[str, Any]) -> 
                 seen_articles.add(article)
                 relevant_articles.append(article)
                 answer_article = article.rsplit("|", maxsplit=1)[-1]
-                if answer_article not in answer_articles:
+                if answer_article not in answer_articles and (
+                    answer_article_limit is None or len(answer_articles) < answer_article_limit
+                ):
                     answer_articles.append(answer_article)
 
     return {

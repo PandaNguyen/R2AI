@@ -1,0 +1,771 @@
+# R2AI Submission Log - Hybrid Type1 vs Type2
+
+Thời điểm ghi log: 2026-06-05 09:27:20 +07:00
+
+## Bối cảnh
+
+Mục tiêu thử nghiệm là kiểm tra định dạng trường `relevant_docs` và `relevant_articles`
+trong `results.json` theo hướng dẫn nộp bài của Challenge.md. Phần hướng dẫn yêu cầu:
+
+- `relevant_docs`: `<mã văn bản>|<tên văn bản>`
+- `relevant_articles`: `<mã văn bản>|<tên văn bản>|<điều>`
+- `<tên văn bản>` phải được viết theo công thức: loại văn bản + mã văn bản + trích yếu.
+
+Do hướng dẫn có thể được hiểu theo hai cách, đã tạo và submit hai biến thể title format:
+
+- Type 1: bỏ mã văn bản khỏi phần tên văn bản.
+  Ví dụ: `04/2017/QH14|Luật Hỗ trợ doanh nghiệp nhỏ và vừa`
+- Type 2: giữ mã văn bản trong phần tên văn bản, nhưng bỏ chữ `số`.
+  Ví dụ: `04/2017/QH14|Luật 04/2017/QH14 Hỗ trợ doanh nghiệp nhỏ và vừa`
+
+Lý do bỏ chữ `số`: tên văn bản trong output trước đó có dạng `Luật số 04/2017/QH14 ...`.
+Theo giả thuyết hiện tại, evaluator hoặc ground truth nhiều khả năng dùng dạng không có từ
+`số`, hoặc ít nhất việc bỏ `số` giúp title gần với hai biến thể cần kiểm chứng hơn.
+
+## Cấu hình chung
+
+- Retrieval backend: Qdrant Cloud collection `r2ai_phapdien_baseline_v1`.
+- Search mode: `hybrid`.
+- Dense query vectors: load sẵn từ `data/question_embeddings.npy`.
+- Query instruction: rỗng, vì embedding câu hỏi đã được tạo sẵn trước đó.
+- Sparse retriever: `Qdrant/bm25`.
+- Dense vector name: `dense`.
+- Sparse vector name: `bm25`.
+- Hybrid fusion: Qdrant server-side RRF thông qua `prefetch` + `RrfQuery` nếu client hỗ trợ.
+- Batch querying: `query_batch_points`, batch size 50 trong command submit được khuyến nghị.
+- Input questions: `data/R2AIStage1DATA.json`.
+- Số câu hỏi: 2000.
+
+## Command đã dùng / có thể tái lập
+
+Type 1:
+
+```powershell
+.venv\Scripts\python.exe main.py submit-qdrant --questions data\R2AIStage1DATA.json --mode hybrid --query-embeddings data\question_embeddings.npy --doc-title-format type1 --qdrant-batch-size 50 --progress-every 100 --output results_type1.json --zip-output type1.zip
+```
+
+Type 2:
+
+```powershell
+.venv\Scripts\python.exe main.py submit-qdrant --questions data\R2AIStage1DATA.json --mode hybrid --query-embeddings data\question_embeddings.npy --doc-title-format type2 --qdrant-batch-size 50 --progress-every 100 --output results_type2.json --zip-output type2.zip
+```
+
+## File submit và log điểm
+
+Type 1:
+
+- Prediction file: `results_type1.json`
+- Zip submit: `type1.zip`
+- Score log: `type1_log.txt`
+
+Type 2:
+
+- Prediction file: `results_type2.json`
+- Zip submit: `type2.zip`
+- Score log: `type2_log.txt`
+
+## Kết quả leaderboard / evaluator
+
+| Metric | Type 1 | Type 2 | Delta Type2 - Type1 |
+|---|---:|---:|---:|
+| ARTICLES_F2MACRO | 0.3185 | 0.3203 | +0.0018 |
+| DOCS_F2MACRO | 0.4681 | 0.4689 | +0.0008 |
+| ARTICLES_PRECISION | 0.1590 | 0.1607 | +0.0017 |
+| ARTICLES_RECALL | 0.4797 | 0.4797 | +0.0000 |
+| DOCS_PRECISION | 0.2957 | 0.2973 | +0.0016 |
+| DOCS_RECALL | 0.6033 | 0.6033 | +0.0000 |
+| CHINH_XAC_NOI_DUNG | 0.0000 | 0.0000 | +0.0000 |
+| DAY_DU | 0.0000 | 0.0000 | +0.0000 |
+| THUC_TIEN | 0.0000 | 0.0000 | +0.0000 |
+| RO_RANG | 0.0000 | 0.0000 | +0.0000 |
+
+Nhận xét trực tiếp:
+
+- Type 2 thắng Type 1 ở cả `ARTICLES_F2MACRO` và `DOCS_F2MACRO`.
+- Recall của Type 1 và Type 2 bằng nhau ở cả article/doc, nghĩa là hai submit gần như
+  truy hồi cùng tập căn cứ đúng.
+- Chênh lệch đến từ precision, không phải recall.
+- Việc Type 2 tăng precision cho thấy format tên văn bản có chứa mã văn bản trong title
+  có khả năng khớp hơn với cách evaluator/ground truth chuẩn hóa.
+
+## Thống kê output
+
+Type 1 (`results_type1.json`):
+
+- Rows: 2000.
+- Avg relevant_docs/query: 3.164.
+- Avg relevant_articles/query: 4.739.
+- Empty relevant_docs: 0.
+- Empty relevant_articles: 0.
+- Max relevant_docs/query: 5.
+- Max relevant_articles/query: 5.
+- Ví dụ first doc:
+  `04/2017/QH14|Luật Hỗ trợ doanh nghiệp nhỏ và vừa`
+- Ví dụ first article:
+  `04/2017/QH14|Luật Hỗ trợ doanh nghiệp nhỏ và vừa|Điều 12`
+
+Type 2 (`results_type2.json`):
+
+- Rows: 2000.
+- Avg relevant_docs/query: 3.167.
+- Avg relevant_articles/query: 4.739.
+- Empty relevant_docs: 0.
+- Empty relevant_articles: 0.
+- Max relevant_docs/query: 5.
+- Max relevant_articles/query: 5.
+- Ví dụ first doc:
+  `04/2017/QH14|Luật 04/2017/QH14 Hỗ trợ doanh nghiệp nhỏ và vừa`
+- Ví dụ first article:
+  `04/2017/QH14|Luật 04/2017/QH14 Hỗ trợ doanh nghiệp nhỏ và vừa|Điều 12`
+
+So sánh hai file:
+
+- Số câu có cùng tập `(law_id, article_no)` nếu bỏ qua title: 1728 / 2000.
+- Số câu có cùng tập `law_id` nếu bỏ qua title: 1787 / 2000.
+- Số câu có exact article set giống nhau: 0 / 2000.
+- Số câu có exact doc set giống nhau: 0 / 2000.
+
+Giải thích:
+
+- Exact set khác nhau hoàn toàn là điều dự kiến, vì title trong từng item luôn khác format.
+- Khi bỏ qua title, vẫn còn 272 câu khác tập article và 213 câu khác tập doc. Khác biệt này
+  không chỉ do string title, mà còn có thể do formatter type2 làm giảm/đổi dedup ở một vài
+  trường hợp title có mã văn bản khác nhau.
+- Avg docs của type2 nhỉnh hơn rất nhẹ: 3.167 so với 3.164. Điều này có thể làm precision
+  giảm nếu thêm false positive, nhưng thực tế precision lại tăng, nên phần tăng do title match
+  có vẻ lớn hơn tác động tăng số docs rất nhỏ.
+
+## Phân tích ban đầu
+
+1. Type 2 nhiều khả năng gần format chuẩn hơn.
+
+Challenge.md nói `<tên văn bản>` phải theo công thức: loại văn bản + mã văn bản + trích yếu.
+Type 2 bám sát công thức này hơn Type 1. Kết quả thực nghiệm cũng ủng hộ Type 2:
+
+- `ARTICLES_PRECISION`: tăng từ 0.1590 lên 0.1607.
+- `DOCS_PRECISION`: tăng từ 0.2957 lên 0.2973.
+- Recall giữ nguyên.
+
+2. Vì recall không đổi, retrieval core không thay đổi.
+
+Hai submit dùng cùng mode hybrid và cùng embedding/sparse retrieval. Việc recall giữ nguyên
+cho thấy điểm khác biệt chính nằm ở match/normalize format của document title trong evaluator,
+không phải ở khả năng tìm đúng điều.
+
+3. Precision thấp hơn recall khá nhiều.
+
+Type 2:
+
+- Article precision: 0.1607.
+- Article recall: 0.4797.
+- Doc precision: 0.2973.
+- Doc recall: 0.6033.
+
+Điều này cho thấy hệ thống đang trả nhiều căn cứ hơn ground truth cần, hoặc top-k/relevant list
+còn nhiễu. Recall tương đối khá, đặc biệt docs recall 0.6033, nhưng precision thấp kéo F2 xuống.
+Vì F2 ưu tiên recall hơn precision, chiến lược hiện tại vẫn có ích, nhưng cần giảm false positive
+mà không làm tụt recall.
+
+4. QA metric đang bằng 0.
+
+Các metric nội dung (`CHINH_XAC_NOI_DUNG`, `DAY_DU`, `THUC_TIEN`, `RO_RANG`) đều bằng 0 vì
+answer hiện là retrieval-only template:
+
+`Các căn cứ pháp luật liên quan được hệ thống truy hồi gồm: Điều ...`
+
+Template này giúp evaluator tự động trích xuất điều luật để chấm IR, nhưng chưa phải câu trả lời
+pháp lý thực sự. Muốn cải thiện phần QA, cần sinh answer có nội dung trả lời câu hỏi dựa trên
+các điều đã truy hồi.
+
+## Kết luận thử nghiệm
+
+- Giữa hai format đã submit, Type 2 đang tốt hơn Type 1.
+- Chênh lệch nhỏ nhưng nhất quán ở cả article/doc F2 và precision.
+- Nên dùng Type 2 làm mặc định cho các submit tiếp theo, trừ khi thử nghiệm format mới chứng minh
+  tốt hơn.
+
+## Hướng thử tiếp theo
+
+1. Giữ `--doc-title-format type2` làm baseline mới.
+2. Thử giảm `top_k` hoặc giới hạn số article/doc ghi vào submit để tăng precision, ví dụ top_k 3
+   so với top_k 5.
+3. Thử `dense only` và `bm25 only` với cùng format type2 để xác định hybrid có thực sự tốt hơn
+   từng nhánh riêng không.
+4. Thử rerank hoặc heuristic lọc các kết quả cùng doc/article, ưu tiên hit có score cao và article
+   xuất hiện trực tiếp trong answer.
+5. Bắt đầu sinh answer thật cho phần QA, nhưng vẫn đảm bảo answer chứa đúng pattern `Điều X` để
+   không mất điểm IR tự động.
+
+## Cập nhật sau khi đọc kỹ lại mục 3.1 IR
+
+Thời điểm cập nhật: 2026-06-05, sau khi đối chiếu lại Challenge.md mục 3.1.
+
+Điểm quan trọng:
+
+- Hệ thống chấm tự động tìm pattern `Điều X` trong trường `answer`.
+- Các pattern này được dùng để so sánh với các điều luật trong đáp án.
+- Vì vậy `answer` không chỉ là phần QA tự do; nó cũng là một kênh ảnh hưởng trực tiếp tới IR,
+  đặc biệt là article precision/recall.
+
+Hệ quả đối với submit hiện tại:
+
+- Answer hiện tại là template retrieval-only:
+  `Các căn cứ pháp luật liên quan được hệ thống truy hồi gồm: Điều ...`
+- Với `results_type2.json`, số pattern `Điều X` trung bình trong answer là khoảng 4.626/câu.
+- Phân phối pattern trong answer của type2:
+  - 1 điều: 11 câu.
+  - 2 điều: 42 câu.
+  - 3 điều: 109 câu.
+  - 4 điều: 360 câu.
+  - 5 điều: 1478 câu.
+- Article precision type2 chỉ 0.1607 trong khi recall 0.4797, cho thấy answer đang liệt kê nhiều
+  điều sai/không có trong ground truth.
+
+Diễn giải mới:
+
+- `relevant_docs` và `relevant_articles` vẫn cần đúng format vì file nộp yêu cầu các field này,
+  và kết quả type2 tăng cả DOCS/ARTICLES precision so với type1.
+- Tuy nhiên, để tối ưu article F2, cần kiểm soát số lượng `Điều X` xuất hiện trong `answer`.
+- Nếu `answer` liệt kê quá nhiều điều, precision giảm.
+- Nếu `answer` liệt kê quá ít điều, recall giảm.
+- Vì F2 ưu tiên recall hơn precision, không nên cắt quá mạnh ngay lập tức; nên thử các mức
+  answer limit 1, 2, 3, 4 trên nền retrieval giữ nguyên.
+
+Thay đổi code đã thêm:
+
+- Thêm option `--answer-article-limit`.
+- Option này chỉ giới hạn số pattern `Điều X` trong trường `answer`.
+- `relevant_docs` và `relevant_articles` vẫn giữ top-k retrieval như trước.
+
+Ví dụ command thử nghiệm tiếp theo:
+
+```powershell
+.venv\Scripts\python.exe main.py submit-qdrant --questions data\R2AIStage1DATA.json --mode hybrid --query-embeddings data\question_embeddings.npy --doc-title-format type2 --answer-article-limit 2 --qdrant-batch-size 50 --progress-every 100 --output results_type2_answer2.json --zip-output type2_answer2.zip
+```
+
+Smoke test 100 câu với `--answer-article-limit 2`:
+
+- Rows: 100.
+- Avg pattern `Điều X` trong answer: 1.98.
+- Min: 1.
+- Max: 2.
+- Phân phối: 1 điều = 2 câu, 2 điều = 98 câu.
+
+Kế hoạch submit nên thử:
+
+1. Type2 + hybrid + answer limit 1.
+2. Type2 + hybrid + answer limit 2.
+3. Type2 + hybrid + answer limit 3.
+4. Type2 + hybrid + answer limit 4.
+5. So sánh với baseline không limit: Article F2 0.3203, Docs F2 0.4689.
+
+Kỳ vọng:
+
+- Limit 1 có thể tăng precision mạnh nhưng có nguy cơ tụt recall nhiều.
+- Limit 2 hoặc 3 có khả năng là điểm cân bằng tốt hơn vì gold trung bình có thể quanh 1-2 điều/câu,
+  suy ra từ baseline hiện tại: precision thấp, recall gần 0.48 khi answer có gần 5 điều.
+- Nếu evaluator article thật sự chủ yếu dựa vào `answer`, thay đổi `answer-article-limit` sẽ tác động
+  rõ tới ARTICLES_PRECISION/RECALL/F2 trong leaderboard.
+
+## Kết quả submit Type2 Hybrid Answer Limit 3
+
+Thời điểm cập nhật: 2026-06-05, sau khi submit `type2_answer3.zip`.
+
+Command tái lập:
+
+```powershell
+.venv\Scripts\python.exe main.py submit-qdrant --questions data\R2AIStage1DATA.json --mode hybrid --query-embeddings data\question_embeddings.npy --doc-title-format type2 --answer-article-limit 3 --qdrant-batch-size 50 --progress-every 100 --output results_type2_answer3.json --zip-output type2_answer3.zip
+```
+
+File:
+
+- Prediction file: `results_type2_answer3.json`
+- Zip submit: `type2_answer3.zip`
+
+Kiểm tra local trên `results_type2_answer3.json`:
+
+- Rows: 2000.
+- Avg pattern `Điều X` trong answer: 2.967.
+- Min: 1.
+- Median: 3.
+- Max: 3.
+- Phân phối:
+  - 1 điều: 11 câu.
+  - 2 điều: 43 câu.
+  - 3 điều: 1946 câu.
+- Ví dụ answer đầu tiên:
+  `Các căn cứ pháp luật liên quan được hệ thống truy hồi gồm: Điều 12; Điều 22; Điều 10.`
+
+Kết quả evaluator:
+
+```json
+{
+  "ARTICLES_F2MACRO": 0.3203,
+  "DOCS_F2MACRO": 0.4705,
+  "ARTICLES_PRECISION": 0.1607,
+  "ARTICLES_RECALL": 0.4797,
+  "DOCS_PRECISION": 0.299,
+  "DOCS_RECALL": 0.6033,
+  "CHINH_XAC_NOI_DUNG": 0.0,
+  "DAY_DU": 0.0,
+  "THUC_TIEN": 0.0,
+  "RO_RANG": 0.0
+}
+```
+
+So với baseline Type2 Hybrid không giới hạn answer:
+
+| Metric | Type2 baseline | Type2 answer limit 3 | Delta |
+|---|---:|---:|---:|
+| ARTICLES_F2MACRO | 0.3203 | 0.3203 | +0.0000 |
+| ARTICLES_PRECISION | 0.1607 | 0.1607 | +0.0000 |
+| ARTICLES_RECALL | 0.4797 | 0.4797 | +0.0000 |
+| DOCS_F2MACRO | 0.4689 | 0.4705 | +0.0016 |
+| DOCS_PRECISION | 0.2973 | 0.2990 | +0.0017 |
+| DOCS_RECALL | 0.6033 | 0.6033 | +0.0000 |
+
+Diễn giải mới:
+
+- `--answer-article-limit 3` đã thật sự thay đổi `answer`: max pattern `Điều X` giảm từ 5 xuống 3.
+- Tuy nhiên ARTICLES_PRECISION/RECALL/F2 giữ nguyên tuyệt đối.
+- Do đó, ít nhất trên leaderboard hiện tại, article IR metric có vẻ không nhạy với số pattern
+  `Điều X` trong `answer`, hoặc evaluator ưu tiên/đọc từ `relevant_articles` thay vì answer.
+- Điều này mâu thuẫn nhẹ với mô tả Challenge.md, nhưng là bằng chứng thực nghiệm rõ hơn.
+- Docs score tăng nhẹ, trong khi answer limit không nên ảnh hưởng docs. Khả năng cao khác biệt này
+  đến từ nondeterminism nhỏ khi query Qdrant/hybrid batch hoặc từ thay đổi nhỏ trong output generation,
+  không phải từ answer limit.
+
+Kết luận cập nhật:
+
+- Không nên tiếp tục tập trung vào `answer_article_limit` để tối ưu IR article, trừ khi muốn xác nhận
+  bằng limit 1 cực đoan.
+- Hướng có xác suất cải thiện cao hơn là thay đổi tập `relevant_articles`/`relevant_docs`:
+  - `top_k`.
+  - mode `dense`/`bm25`/`hybrid`.
+  - prefetch limit.
+  - dedup/lọc tài liệu.
+  - rerank sau truy hồi.
+
+## Kết quả submit Type2 Hybrid Top-k 10
+
+Thời điểm cập nhật: 2026-06-05, sau khi submit cấu hình `--top-k 10`.
+
+Command người dùng đã chạy:
+
+```powershell
+.venv\Scripts\python.exe main.py submit-qdrant --questions data\R2AIStage1DATA.json --mode hybrid --query-embeddings data\question_embeddings.npy --doc-title-format type2 --qdrant-batch-size 50 --progress-every 100 --output results_type2_answer3.json --zip-output type2_4_answer.zip --top-k 10
+```
+
+Lưu ý:
+
+- Tên output `results_type2_answer3.json` hơi gây nhầm vì command không có `--answer-article-limit 3`.
+- Với command này, `answer` sẽ mặc định liệt kê các điều từ toàn bộ top-k dedup, không bị giới hạn 3.
+- Biến chính trong thử nghiệm này là `--top-k 10`.
+
+Kết quả evaluator:
+
+```json
+{
+  "ARTICLES_F2MACRO": 0.3024,
+  "DOCS_F2MACRO": 0.402,
+  "ARTICLES_PRECISION": 0.1194,
+  "ARTICLES_RECALL": 0.5843,
+  "DOCS_PRECISION": 0.1945,
+  "DOCS_RECALL": 0.6167,
+  "CHINH_XAC_NOI_DUNG": 0.0,
+  "DAY_DU": 0.0,
+  "THUC_TIEN": 0.0,
+  "RO_RANG": 0.0
+}
+```
+
+So với baseline Type2 Hybrid top-k 5:
+
+| Metric | Type2 top-k 5 | Type2 top-k 10 | Delta |
+|---|---:|---:|---:|
+| ARTICLES_F2MACRO | 0.3203 | 0.3024 | -0.0179 |
+| ARTICLES_PRECISION | 0.1607 | 0.1194 | -0.0413 |
+| ARTICLES_RECALL | 0.4797 | 0.5843 | +0.1046 |
+| DOCS_F2MACRO | 0.4689 hoặc 0.4705 | 0.4020 | khoảng -0.067 |
+| DOCS_PRECISION | 0.2973 hoặc 0.2990 | 0.1945 | khoảng -0.104 |
+| DOCS_RECALL | 0.6033 | 0.6167 | +0.0134 |
+
+Diễn giải:
+
+- Tăng `top-k` từ 5 lên 10 làm recall article tăng mạnh: +0.1046.
+- Nhưng precision article giảm rất mạnh: -0.0413.
+- F2 article giảm từ 0.3203 xuống 0.3024, nghĩa là phần recall tăng không đủ bù precision giảm.
+- Với docs, top-k 10 rất bất lợi: recall docs chỉ tăng nhẹ nhưng precision docs giảm lớn, làm DOCS_F2MACRO
+  tụt từ khoảng 0.47 xuống 0.402.
+
+Kết luận:
+
+- Không nên dùng `top-k 10` làm baseline.
+- Vùng đáng thử tiếp là `top-k 3` và `top-k 4`, hoặc giữ top-k 5 nhưng thêm lọc/rerank.
+- Vì `top-k 10` tăng recall article, có thể retrieval phía sau vẫn chứa thêm gold, nhưng noise quá nhiều.
+  Nếu muốn khai thác phần recall này, cần rerank hoặc lọc sau retrieval thay vì nộp thẳng toàn bộ top 10.
+
+## Thống kê năm lawcode trong dữ liệu
+
+Thời điểm cập nhật: 2026-06-05, sau nghi vấn dữ liệu Pháp điển có thể chưa đủ hoặc lệch so với
+không gian văn bản pháp luật cần cho bài SME.
+
+Nguồn thống kê chính:
+
+- `build/retrieval_units.jsonl`: dữ liệu Pháp điển đã build và đã index vào Qdrant.
+- `data/R2AIStage1DATA.baseline.json`: baseline prediction/reference-like file có sẵn.
+- `data/R2AIStage1DATA.lawcodes.from_baseline.json`: tổng hợp lawcode từ baseline.
+- `data/vietnamese-legal-documents/README.md`: mô tả dataset pháp luật ngoài.
+
+### Pháp điển đã index
+
+- Tổng retrieval units: 112,640.
+- Units có `source_law_id_candidates`: 111,660.
+- Tổng lượt lawcode candidate: 129,125.
+- Năm nhỏ nhất trích được từ lawcode: 1998.
+- Năm lớn nhất trích được từ lawcode: 2026.
+- Số năm khác nhau: 29.
+
+Phân bố lượt lawcode candidate theo năm:
+
+| Năm | Lượt |
+|---:|---:|
+| 1998 | 14 |
+| 1999 | 141 |
+| 2000 | 108 |
+| 2001 | 64 |
+| 2002 | 221 |
+| 2003 | 384 |
+| 2004 | 329 |
+| 2005 | 965 |
+| 2006 | 1,702 |
+| 2007 | 1,424 |
+| 2008 | 1,166 |
+| 2009 | 851 |
+| 2010 | 1,506 |
+| 2011 | 2,141 |
+| 2012 | 3,234 |
+| 2013 | 6,190 |
+| 2014 | 7,260 |
+| 2015 | 12,267 |
+| 2016 | 10,020 |
+| 2017 | 9,154 |
+| 2018 | 11,213 |
+| 2019 | 10,580 |
+| 2020 | 15,612 |
+| 2021 | 11,229 |
+| 2022 | 9,126 |
+| 2023 | 5,149 |
+| 2024 | 4,383 |
+| 2025 | 2,663 |
+| 2026 | 29 |
+
+Số lawcode unique theo năm trong Pháp điển:
+
+| Năm | Unique lawcodes |
+|---:|---:|
+| 1998 | 3 |
+| 1999 | 11 |
+| 2000 | 16 |
+| 2001 | 11 |
+| 2002 | 20 |
+| 2003 | 30 |
+| 2004 | 23 |
+| 2005 | 40 |
+| 2006 | 69 |
+| 2007 | 65 |
+| 2008 | 69 |
+| 2009 | 60 |
+| 2010 | 114 |
+| 2011 | 137 |
+| 2012 | 166 |
+| 2013 | 237 |
+| 2014 | 266 |
+| 2015 | 297 |
+| 2016 | 454 |
+| 2017 | 315 |
+| 2018 | 417 |
+| 2019 | 302 |
+| 2020 | 323 |
+| 2021 | 280 |
+| 2022 | 218 |
+| 2023 | 185 |
+| 2024 | 132 |
+| 2025 | 73 |
+| 2026 | 1 |
+
+Top lawcodes theo số lượt xuất hiện trong Pháp điển:
+
+| Lượt | Lawcode | Năm |
+|---:|---|---:|
+| 1,611 | 200/2014/TT-BTC | 2014 |
+| 1,277 | 45/2022/NĐ-CP | 2022 |
+| 987 | 100/2019/NĐ-CP | 2019 |
+| 815 | 100/2015/QH13 | 2015 |
+| 794 | 155/2020/NĐ-CP | 2020 |
+| 746 | 02/2025/TT-BKHĐT | 2025 |
+| 689 | 91/2015/QH13 | 2015 |
+| 680 | 117/2020/NĐ-CP | 2020 |
+| 678 | 82/2020/NĐ-CP | 2020 |
+| 665 | 15/2020/NĐ-CP | 2020 |
+
+Nhận xét:
+
+- Pháp điển không thiếu hoàn toàn văn bản mới: có dữ liệu tới 2026.
+- Tuy nhiên phần 2025-2026 rất mỏng so với 2020-2022.
+- Dải trước 1998 không xuất hiện trong lawcode candidate của Pháp điển đã build, trong khi dataset
+  `vietnamese-legal-documents` mô tả có văn bản từ 1924.
+
+### Baseline/lawcode files
+
+`data/R2AIStage1DATA.baseline.json`:
+
+- Unique lawcode trong `relevant_docs`: năm 2000-2025.
+- Mentions trong `relevant_docs`: năm 2000-2025.
+- Unique lawcode trong `relevant_articles`: năm 2000-2025.
+- Mentions trong `relevant_articles`: năm 2000-2025.
+
+`data/R2AIStage1DATA.lawcodes.from_baseline.json`:
+
+- Unique lawcode parse được theo pattern `số/năm/loại`: năm 2000-2025.
+- Mentions weighted by `total_mentions`: năm 2000-2025.
+- Tổng weighted mentions: 23,825.
+- Các năm có mentions cao nhất:
+  - 2020: 3,267.
+  - 2019: 2,393.
+  - 2021: 2,341.
+  - 2015: 2,139.
+  - 2022: 1,831.
+  - 2018: 1,632.
+  - 2023: 1,494.
+
+Lưu ý kỹ thuật:
+
+- Có nhiều mã không parse được năm bằng pattern `số/năm/loại`, ví dụ:
+  `01/VBHN-BCA`, `01/VBHN-BTC`, `01/QĐ-BKHĐT`, `01/CT-BTC`.
+- Các mã này không hẳn là thiếu năm trong dữ liệu; nhiều văn bản hợp nhất/quyết định/chỉ thị dùng
+  format không chứa năm ở phần mã.
+- Vì vậy thống kê năm theo lawcode có bias: nó chỉ chính xác cho các mã có dạng `.../<năm>/...`.
+
+### Vietnamese Legal Documents
+
+README của `data/vietnamese-legal-documents` mô tả:
+
+- Tổng documents: 518,255.
+- Date range: 1924-2026.
+- Có metadata fields: `document_number`, `legal_type`, `issuance_date`, v.v.
+
+Chưa đọc trực tiếp được parquet metadata trong `.venv` hiện tại vì thiếu `pyarrow`.
+Nếu cần thống kê chính xác theo `issuance_date`, cần cài/sync dependency `pyarrow` hoặc chạy trong
+env có extra `data`.
+
+### Kết luận về độ phủ năm
+
+- Collection Pháp điển hiện tại đã phủ 1998-2026 theo lawcode candidate.
+- Nhưng dataset pháp luật ngoài rộng hơn nhiều: 1924-2026 và 518k văn bản.
+- Nếu gold của cuộc thi lấy từ không gian rộng như `vietnamese-legal-documents`, chỉ dùng Pháp điển
+  có thể thiếu văn bản hoặc thiếu title/code canonical, đặc biệt với văn bản không nằm trong cấu trúc
+  pháp điển hoặc các văn bản rất cũ/trích dẫn ngoài Pháp điển.
+- Dù vậy baseline/lawcode files của bài test tập trung mạnh vào 2000-2025, trùng khá tốt với dải
+  năm Pháp điển đang có.
+
+Hướng hành động:
+
+1. Không nên kết luận Pháp điển thiếu theo năm cho giai đoạn 2000-2025; nó có phủ khá rộng.
+2. Vấn đề có thể là Pháp điển title/lawcode khác canonical của evaluator, nhất là với `VBHN`.
+3. Nên thử khai thác `data/vietnamese-legal-documents/metadata` để build map canonical:
+   `document_number -> legal_type + document_number + title`.
+4. Map này có thể giúp sửa `relevant_docs/relevant_articles` sang title canonical hơn, thay vì lấy
+   title suy ra từ `retrieval_text` của Pháp điển.
+
+## Kết quả đặc biệt: BM25-only và Dense-only Type2
+
+Thời điểm cập nhật: 2026-06-05, sau khi submit thêm các nhánh đơn lẻ.
+
+Kết quả người dùng cung cấp:
+
+BM25-only Type2, `top-k = 3`:
+
+```json
+{
+  "ARTICLES_F2MACRO": 0.3066,
+  "DOCS_F2MACRO": 0.4379,
+  "ARTICLES_PRECISION": 0.2067,
+  "ARTICLES_RECALL": 0.3833,
+  "DOCS_PRECISION": 0.3267,
+  "DOCS_RECALL": 0.5133,
+  "CHINH_XAC_NOI_DUNG": 0.0,
+  "DAY_DU": 0.0,
+  "THUC_TIEN": 0.0,
+  "RO_RANG": 0.0
+}
+```
+
+Dense-only Type2:
+
+```json
+{
+  "ARTICLES_F2MACRO": 0.3525,
+  "DOCS_F2MACRO": 0.5162,
+  "ARTICLES_PRECISION": 0.2233,
+  "ARTICLES_RECALL": 0.4447,
+  "DOCS_PRECISION": 0.4167,
+  "DOCS_RECALL": 0.5867,
+  "CHINH_XAC_NOI_DUNG": 0.0,
+  "DAY_DU": 0.0,
+  "THUC_TIEN": 0.0,
+  "RO_RANG": 0.0
+}
+```
+
+So sánh với baseline Type2 Hybrid top-k 5:
+
+| Metric | Hybrid Type2 top-k 5 | BM25 Type2 top-k 3 | Dense Type2 |
+|---|---:|---:|---:|
+| ARTICLES_F2MACRO | 0.3203 | 0.3066 | 0.3525 |
+| ARTICLES_PRECISION | 0.1607 | 0.2067 | 0.2233 |
+| ARTICLES_RECALL | 0.4797 | 0.3833 | 0.4447 |
+| DOCS_F2MACRO | 0.4689/0.4705 | 0.4379 | 0.5162 |
+| DOCS_PRECISION | 0.2973/0.2990 | 0.3267 | 0.4167 |
+| DOCS_RECALL | 0.6033 | 0.5133 | 0.5867 |
+
+Diễn giải:
+
+- Dense-only Type2 hiện là kết quả tốt nhất đã ghi nhận:
+  - Article F2 tăng từ 0.3203 lên 0.3525.
+  - Docs F2 tăng từ khoảng 0.47 lên 0.5162.
+  - Precision tăng rất mạnh ở cả article và docs.
+- Hybrid có recall article cao hơn dense-only: 0.4797 so với 0.4447.
+- Nhưng hybrid precision thấp hơn nhiều: 0.1607 so với 0.2233.
+- Vì precision giảm quá mạnh, hybrid RRF hiện tại không bù được bằng recall.
+- BM25-only top-k 3 precision tốt hơn hybrid nhưng recall thấp hơn nhiều; BM25 không bằng dense-only.
+
+Kết luận cập nhật:
+
+- Dense vector đã embed sẵn là retrieval signal mạnh nhất hiện tại.
+- Sparse/BM25 đang đưa thêm nhiễu vào hybrid RRF.
+- Không nên xem hybrid hiện tại là baseline chính nữa.
+- Baseline mới nên là Dense-only Type2.
+
+Hướng thử tiếp theo:
+
+1. Chạy dense-only type2 với các `top-k`: 3, 4, 5, 6, 8 để tìm điểm F2 tốt nhất.
+2. Thử hybrid biến thể có dense ưu tiên mạnh hơn:
+   - dense-only top-k N làm nền.
+   - BM25 chỉ dùng để bổ sung nếu trùng doc/law hoặc nếu dense thiếu số lượng.
+   - Không dùng server-side RRF cân bằng như hiện tại.
+3. Thử rerank hybrid theo rule: candidate xuất hiện trong dense được ưu tiên hơn candidate chỉ xuất hiện trong BM25.
+4. Giữ `doc-title-format type2`.
+
+## Dense-only Type2 Top-k Sweep
+
+Thời điểm cập nhật: 2026-06-05, sau khi người dùng thử dense-only với top-k 3, 4, 5.
+
+Ghi chú:
+
+- Kết quả dense-only Type2 trước đó là `top-k = 3`, không phải top-k mặc định.
+- Sau khi thử thêm top-k 4 và 5, top-k 4 là tốt nhất về `ARTICLES_F2MACRO`.
+
+Dense-only Type2 top-k 3:
+
+```json
+{
+  "ARTICLES_F2MACRO": 0.3525,
+  "DOCS_F2MACRO": 0.5162,
+  "ARTICLES_PRECISION": 0.2233,
+  "ARTICLES_RECALL": 0.4447,
+  "DOCS_PRECISION": 0.4167,
+  "DOCS_RECALL": 0.5867,
+  "CHINH_XAC_NOI_DUNG": 0.0,
+  "DAY_DU": 0.0,
+  "THUC_TIEN": 0.0,
+  "RO_RANG": 0.0
+}
+```
+
+Dense-only Type2 top-k 4:
+
+```json
+{
+  "ARTICLES_F2MACRO": 0.359,
+  "DOCS_F2MACRO": 0.5106,
+  "ARTICLES_PRECISION": 0.1983,
+  "ARTICLES_RECALL": 0.493,
+  "DOCS_PRECISION": 0.3917,
+  "DOCS_RECALL": 0.6033,
+  "CHINH_XAC_NOI_DUNG": 0.0,
+  "DAY_DU": 0.0,
+  "THUC_TIEN": 0.0,
+  "RO_RANG": 0.0
+}
+```
+
+Dense-only Type2 top-k 5:
+
+```json
+{
+  "ARTICLES_F2MACRO": 0.3429,
+  "DOCS_F2MACRO": 0.4952,
+  "ARTICLES_PRECISION": 0.173,
+  "ARTICLES_RECALL": 0.508,
+  "DOCS_PRECISION": 0.3663,
+  "DOCS_RECALL": 0.6033,
+  "CHINH_XAC_NOI_DUNG": 0.0,
+  "DAY_DU": 0.0,
+  "THUC_TIEN": 0.0,
+  "RO_RANG": 0.0
+}
+```
+
+So sánh:
+
+| Metric | Dense top-k 3 | Dense top-k 4 | Dense top-k 5 |
+|---|---:|---:|---:|
+| ARTICLES_F2MACRO | 0.3525 | 0.3590 | 0.3429 |
+| ARTICLES_PRECISION | 0.2233 | 0.1983 | 0.1730 |
+| ARTICLES_RECALL | 0.4447 | 0.4930 | 0.5080 |
+| DOCS_F2MACRO | 0.5162 | 0.5106 | 0.4952 |
+| DOCS_PRECISION | 0.4167 | 0.3917 | 0.3663 |
+| DOCS_RECALL | 0.5867 | 0.6033 | 0.6033 |
+
+Diễn giải:
+
+- Từ top-k 3 lên top-k 4:
+  - Article recall tăng mạnh: +0.0483.
+  - Article precision giảm vừa phải: -0.0250.
+  - Article F2 tăng: +0.0065.
+  - Docs F2 giảm nhẹ: -0.0056.
+- Từ top-k 4 lên top-k 5:
+  - Article recall chỉ tăng nhẹ: +0.0150.
+  - Article precision giảm mạnh: -0.0253.
+  - Article F2 giảm rõ: -0.0161.
+  - Docs recall không tăng, precision giảm, nên Docs F2 giảm.
+
+Kết luận mới:
+
+- Baseline tốt nhất hiện tại cho article F2 là Dense-only Type2 top-k 4.
+- Nếu leaderboard/tiêu chí chính ưu tiên article retrieval, dùng top-k 4.
+- Nếu muốn tối đa docs F2, top-k 3 nhỉnh hơn top-k 4: 0.5162 so với 0.5106.
+- Top-k 5 không nên dùng.
+
+Baseline hiện tại:
+
+```text
+mode = dense
+doc_title_format = type2
+top_k = 4
+ARTICLES_F2MACRO = 0.3590
+DOCS_F2MACRO = 0.5106
+```
+
+Command tái lập baseline hiện tại:
+
+```powershell
+.venv\Scripts\python.exe main.py submit-qdrant --questions data\R2AIStage1DATA.json --mode dense --query-embeddings data\question_embeddings.npy --doc-title-format type2 --top-k 4 --qdrant-batch-size 50 --progress-every 100 --output results_dense_type2_top4.json --zip-output dense_type2_top4.zip
+```
+
+
+BM25 only type 2 (top-k = 3):
+{"ARTICLES_F2MACRO": 0.3066, "DOCS_F2MACRO": 0.4379, "ARTICLES_PRECISION": 0.2067, "ARTICLES_RECALL": 0.3833, "DOCS_PRECISION": 0.3267, "DOCS_RECALL": 0.5133, "CHINH_XAC_NOI_DUNG": 0.0, "DAY_DU": 0.0, "THUC_TIEN": 0.0, "RO_RANG": 0.0}
+dense only type 2:
+{"ARTICLES_F2MACRO": 0.3525, "DOCS_F2MACRO": 0.5162, "ARTICLES_PRECISION": 0.2233, "ARTICLES_RECALL": 0.4447, "DOCS_PRECISION": 0.4167, "DOCS_RECALL": 0.5867, "CHINH_XAC_NOI_DUNG": 0.0, "DAY_DU": 0.0, "THUC_TIEN": 0.0, "RO_RANG": 0.0}
