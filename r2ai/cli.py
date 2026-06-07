@@ -50,8 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("build"),
         help="Directory to write Phase 1 artifacts",
     )
-    build.add_argument("--max-chunk-tokens", type=int, default=384)
-    build.add_argument("--chunk-overlap-tokens", type=int, default=48)
+    build.add_argument("--max-chunk-tokens", type=int, default=2048)
+    build.add_argument("--chunk-overlap-tokens", type=int, default=256)
 
     ensure_data = subparsers.add_parser("ensure-phapdien-data", help="Download phapdien files if missing")
     ensure_data.add_argument(
@@ -78,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--skip-build", action="store_true")
     ingest.add_argument("--limit", type=int, default=None, help="Optional point limit for smoke tests")
     ingest.add_argument("--max-chunk-tokens", type=int, default=2048)
-    ingest.add_argument("--chunk-overlap-tokens", type=int, default=128)
+    ingest.add_argument("--chunk-overlap-tokens", type=int, default=256)
 
     search = subparsers.add_parser("search-qdrant", help="Search the Qdrant Cloud collection with hybrid retrieval")
     search.add_argument("query", help="Vietnamese legal question or keyword query")

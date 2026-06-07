@@ -4,12 +4,20 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-DATA_DIR="${R2AI_VLD_DIR:-data/vietnamese-legal-documents}"
-BUILD_DIR="${R2AI_VLD_BUILD_DIR:-build/vld_business_scope}"
-MODEL_CACHE_DIR="${R2AI_MODEL_CACHE_DIR:-.cache/models}"
+KAGGLE_TEMP="${KAGGLE_TEMP:-/kaggle/temp}"
+DATA_DIR="${R2AI_VLD_DIR:-$KAGGLE_TEMP/r2ai-data/vietnamese-legal-documents}"
+BUILD_DIR="${R2AI_VLD_BUILD_DIR:-$KAGGLE_TEMP/r2ai-build/vld_business_scope}"
+MODEL_CACHE_DIR="${R2AI_MODEL_CACHE_DIR:-$KAGGLE_TEMP/r2ai-cache/models}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$KAGGLE_TEMP/r2ai-cache/uv}"
+export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$KAGGLE_TEMP/r2ai-venv}"
+export HF_HOME="${HF_HOME:-$KAGGLE_TEMP/r2ai-cache/huggingface}"
+export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$KAGGLE_TEMP/r2ai-cache/pip}"
+export TMPDIR="${TMPDIR:-$KAGGLE_TEMP/r2ai-tmp}"
 VLD_REPO_ID="${VLD_REPO_ID:-vohuutridung/vietnamese-legal-documents}"
 VLD_GIT_URL="${VLD_GIT_URL:-https://huggingface.co/datasets/vohuutridung/vietnamese-legal-documents}"
 COLLECTION="${QDRANT_COLLECTION:-vld_business_law}"
+
+mkdir -p "$MODEL_CACHE_DIR" "$UV_CACHE_DIR" "$HF_HOME" "$PIP_CACHE_DIR" "$TMPDIR"
 
 if [[ -z "${QDRANT_URL:-}" ]]; then
   echo "Missing QDRANT_URL. Set it as a Kaggle secret/env var before running." >&2
@@ -30,7 +38,8 @@ uv sync --extra data --extra ingest
 uv run python scripts/ensure_vld_data.py \
   --source-dir "$DATA_DIR" \
   --repo-id "$VLD_REPO_ID" \
-  --git-url "$VLD_GIT_URL"
+  --git-url "$VLD_GIT_URL" \
+  --download-method snapshot
 
 BUILD_ARGS=(
   scripts/build_vld_business_qdrant.py
@@ -40,6 +49,7 @@ BUILD_ARGS=(
   --max-text-tokens "${R2AI_MAX_TEXT_TOKENS:-2048}"
   --table-rows-per-chunk "${R2AI_TABLE_ROWS_PER_CHUNK:-8}"
   --progress-every "${R2AI_PROGRESS_EVERY:-100}"
+  --preview-only
 )
 
 if [[ -n "${R2AI_VLD_IDS_FILE:-}" ]]; then
@@ -51,6 +61,15 @@ if [[ -n "${R2AI_VLD_LIMIT:-}" ]]; then
 fi
 
 uv run python "${BUILD_ARGS[@]}"
+
+if [[ "${R2AI_DROP_DATA_AFTER_BUILD:-1}" == "1" && "$DATA_DIR" == "$KAGGLE_TEMP"* ]]; then
+  echo "Dropping temporary VLD parquet data after build to save disk: $DATA_DIR"
+  rm -rf "$DATA_DIR"
+fi
+
+if command -v uv >/dev/null 2>&1; then
+  uv cache prune || true
+fi
 
 INGEST_ARGS=(
   ingest-qdrant
@@ -71,3 +90,8 @@ if [[ -n "${R2AI_INGEST_LIMIT:-}" ]]; then
 fi
 
 uv run r2ai "${INGEST_ARGS[@]}"
+
+if [[ "${R2AI_CLEANUP_AFTER_INGEST:-0}" == "1" && "$BUILD_DIR" == "$KAGGLE_TEMP"* ]]; then
+  echo "Dropping temporary VLD build artifacts after ingest: $BUILD_DIR"
+  rm -rf "$BUILD_DIR"
+fi

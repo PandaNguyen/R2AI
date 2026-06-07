@@ -55,12 +55,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-dir", type=Path, default=Path("data/vietnamese-legal-documents"))
     parser.add_argument("--repo-id", default=DEFAULT_REPO_ID)
     parser.add_argument("--git-url", default=DEFAULT_GIT_URL)
+    parser.add_argument(
+        "--download-method",
+        choices=["snapshot", "git-first"],
+        default="git-first",
+        help="Use snapshot on Kaggle to avoid a large .git/LFS checkout.",
+    )
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    clone_if_missing(args.source_dir, args.git_url)
+    if args.download_method == "git-first":
+        clone_if_missing(args.source_dir, args.git_url)
     if not has_vld_data(args.source_dir):
         snapshot_download(args.source_dir, args.repo_id)
     if not has_vld_data(args.source_dir):

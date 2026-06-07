@@ -9,6 +9,7 @@ full business subset can be built on Kaggle.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import sys
 from collections import Counter
@@ -122,11 +123,11 @@ def build_artifacts(args: argparse.Namespace) -> dict[str, Any]:
     table_chunk_count = 0
     errors: list[dict[str, Any]] = []
 
-    with (
-        articles_path.open("w", encoding="utf-8", newline="\n") as articles_out,
-        chunks_path.open("w", encoding="utf-8", newline="\n") as chunks_out,
-        preview_path.open("w", encoding="utf-8", newline="\n") as preview_out,
-    ):
+    articles_context = nullcontext(None) if args.preview_only else articles_path.open("w", encoding="utf-8", newline="\n")
+    chunks_context = nullcontext(None) if args.preview_only else chunks_path.open("w", encoding="utf-8", newline="\n")
+    with articles_context as articles_out, chunks_context as chunks_out, preview_path.open(
+        "w", encoding="utf-8", newline="\n"
+    ) as preview_out:
         for parquet_path in sorted((args.vld_root / "content").glob("*.parquet")):
             for content_row in iter_parquet_rows(parquet_path, columns=["id", "content"]):
                 doc_id = int(content_row["id"])
@@ -145,23 +146,25 @@ def build_artifacts(args: argparse.Namespace) -> dict[str, Any]:
                     continue
 
                 documents_built += 1
-                articles_out.write(
-                    json.dumps(
-                        {
-                            **document["metadata"],
-                            "business_scope_tier": metadata.get("_business_scope_tier"),
-                            "chunk_count": len(chunks),
-                        },
-                        ensure_ascii=False,
+                if articles_out is not None:
+                    articles_out.write(
+                        json.dumps(
+                            {
+                                **document["metadata"],
+                                "business_scope_tier": metadata.get("_business_scope_tier"),
+                                "chunk_count": len(chunks),
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
                     )
-                    + "\n"
-                )
                 for chunk in chunks:
                     chunk["business_scope_tier"] = metadata.get("_business_scope_tier")
                     chunk_count += 1
                     chunk_type_counts[chunk["chunk_type"]] += 1
                     table_chunk_count += int(bool(chunk.get("contains_table")))
-                    chunks_out.write(json.dumps(chunk, ensure_ascii=False) + "\n")
+                    if chunks_out is not None:
+                        chunks_out.write(json.dumps(chunk, ensure_ascii=False) + "\n")
                     preview_out.write(json.dumps(make_qdrant_preview(chunk), ensure_ascii=False) + "\n")
 
                 if args.progress_every > 0 and documents_built % args.progress_every == 0:
@@ -191,8 +194,8 @@ def build_artifacts(args: argparse.Namespace) -> dict[str, Any]:
         "outputs": {
             "metadata": str(metadata_out_path),
             "document_ids": str(ids_out_path),
-            "articles": str(articles_path),
-            "retrieval_units": str(chunks_path),
+            "articles": "" if args.preview_only else str(articles_path),
+            "retrieval_units": "" if args.preview_only else str(chunks_path),
             "qdrant_payload_preview": str(preview_path),
             "report": str(args.output_dir / "build_report.json"),
         },
@@ -218,6 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ids-file", type=Path)
     parser.add_argument("--limit", type=int, default=0, help="Optional document limit for smoke tests.")
     parser.add_argument("--progress-every", type=int, default=100)
+    parser.add_argument("--preview-only", action="store_true", help="Only write qdrant_payload_preview.jsonl.")
     return parser
 
 
