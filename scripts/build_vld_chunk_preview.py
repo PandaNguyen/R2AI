@@ -455,6 +455,8 @@ def text_chunk_type(node: dict[str, Any]) -> str:
         return "clause_text_chunk"
     if node_type == "point":
         return "point_text_chunk"
+    if node_type == "subpoint":
+        return "subpoint_text_chunk"
     if node_type == "appendix":
         return "appendix_text_chunk"
     if node_type == "footer":
