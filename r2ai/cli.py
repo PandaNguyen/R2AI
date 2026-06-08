@@ -106,6 +106,13 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--output", type=Path, default=Path("results.json"))
     submit.add_argument("--output-format", choices=["json", "jsonl"], default="json")
     submit.add_argument("--zip-output", type=Path, default=None, help="Optional flat zip containing results.json")
+    submit.add_argument(
+        "--checkpoint-output",
+        type=Path,
+        default=None,
+        help="JSONL checkpoint for completed question predictions; defaults to <output>.checkpoint.jsonl",
+    )
+    submit.add_argument("--no-resume", action="store_true", help="Ignore any existing submission checkpoint")
     submit.add_argument("--collection", default=DEFAULT_COLLECTION)
     submit.add_argument("--mode", choices=["bm25", "dense", "hybrid"], default=DEFAULT_SEARCH_MODE)
     submit.add_argument("--dense-model", default=DEFAULT_DENSE_MODEL)
@@ -229,6 +236,9 @@ def main() -> None:
             questions = questions[: args.limit]
             if query_vectors is not None:
                 query_vectors = query_vectors[: args.limit]
+        checkpoint_output = None
+        if not args.no_resume:
+            checkpoint_output = args.checkpoint_output or args.output.with_name(f"{args.output.name}.checkpoint.jsonl")
         rows = search_qdrant_batch(
             QdrantSearchConfig.from_env(
                 query_text="placeholder",
@@ -254,6 +264,7 @@ def main() -> None:
             query_vectors=query_vectors,
             progress_every=args.progress_every,
             query_batch_size=args.qdrant_batch_size,
+            checkpoint_path=checkpoint_output,
         )
         write_submission(args.output, rows, output_format=args.output_format)
         if args.zip_output:

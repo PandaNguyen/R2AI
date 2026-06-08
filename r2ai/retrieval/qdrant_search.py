@@ -13,6 +13,7 @@ from typing import Any, Iterable, Literal
 
 from r2ai.indexing.config import DEFAULT_QUERY_INSTRUCTION, QdrantSearchConfig
 from r2ai.indexing.qdrant_ingest import _load_dense_model, _load_sparse_model, _make_qdrant_client
+from r2ai.indexing.retry import is_retryable_request_error, retry_request
 
 RRF_K = 60
 SEARCH_MODES = {"bm25", "dense", "hybrid"}
@@ -62,7 +63,9 @@ def search_qdrant(
 
     if mode == "dense":
         hits = _response_points(
-            client.query_points(
+            _query_points(
+                client,
+                label="Qdrant dense query",
                 collection_name=config.collection_name,
                 query=dense_vector,
                 using=config.dense_vector_name,
@@ -75,7 +78,9 @@ def search_qdrant(
         results = ranked_points_to_results(hits, source="dense")
     elif mode == "bm25":
         hits = _response_points(
-            client.query_points(
+            _query_points(
+                client,
+                label="Qdrant BM25 query",
                 collection_name=config.collection_name,
                 query=sparse_vector,
                 using=config.sparse_vector_name,
@@ -88,7 +93,9 @@ def search_qdrant(
         results = ranked_points_to_results(hits, source="sparse")
     elif has_server_side_rrf(models):
         hits = _response_points(
-            client.query_points(
+            _query_points(
+                client,
+                label="Qdrant hybrid query",
                 collection_name=config.collection_name,
                 prefetch=[
                     models.Prefetch(query=sparse_vector, using=config.sparse_vector_name, limit=search_limit),
@@ -104,7 +111,9 @@ def search_qdrant(
         results = ranked_points_to_results(hits, source="hybrid")
     else:
         dense_hits = _response_points(
-            client.query_points(
+            _query_points(
+                client,
+                label="Qdrant client-side hybrid dense query",
                 collection_name=config.collection_name,
                 query=dense_vector,
                 using=config.dense_vector_name,
@@ -115,7 +124,9 @@ def search_qdrant(
             )
         )
         sparse_hits = _response_points(
-            client.query_points(
+            _query_points(
+                client,
+                label="Qdrant client-side hybrid sparse query",
                 collection_name=config.collection_name,
                 query=sparse_vector,
                 using=config.sparse_vector_name,
@@ -152,12 +163,27 @@ def search_qdrant_batch(
     models: Any | None = None,
     progress_every: int = 0,
     query_batch_size: int = 64,
+    checkpoint_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Run retrieval for many questions, optionally with precomputed dense vectors."""
     if query_vectors is not None and len(query_vectors) != len(questions):
         raise ValueError(
             f"query vector count ({len(query_vectors)}) must match question count ({len(questions)})."
         )
+    completed_rows = load_submission_checkpoint(checkpoint_path) if checkpoint_path is not None else {}
+    if completed_rows:
+        print(f"Resuming submission search: {len(completed_rows)} question ids already checkpointed", flush=True)
+    pending_questions = []
+    pending_vectors = [] if query_vectors is not None else None
+    for index, question in enumerate(questions):
+        if str(question["id"]) in completed_rows:
+            continue
+        pending_questions.append(question)
+        if pending_vectors is not None:
+            pending_vectors.append(query_vectors[index])
+    if not pending_questions:
+        return ordered_checkpoint_rows(questions, completed_rows)
+
     if client is None or models is None:
         client, models = _make_qdrant_client(
             config.qdrant_url,
@@ -171,63 +197,78 @@ def search_qdrant_batch(
         sparse_model = _load_sparse_model(config.sparse_model_name, config.model_cache_dir)
     if (
         mode == "dense"
-        and query_vectors is not None
+        and pending_vectors is not None
         and query_batch_size > 1
         and hasattr(client, "query_batch_points")
         and hasattr(models, "QueryRequest")
     ):
-        return search_qdrant_dense_batch(
+        new_rows = search_qdrant_dense_batch(
             config,
-            questions=questions,
-            query_vectors=query_vectors,
+            questions=pending_questions,
+            query_vectors=pending_vectors,
             client=client,
             models=models,
             progress_every=progress_every,
             query_batch_size=query_batch_size,
+            checkpoint_path=checkpoint_path,
         )
+        completed_rows.update({str(row["id"]): row for row in new_rows})
+        return ordered_checkpoint_rows(questions, completed_rows)
     if (
         mode in {"bm25", "hybrid"}
         and query_batch_size > 1
         and hasattr(client, "query_batch_points")
         and hasattr(models, "QueryRequest")
-        and (mode == "bm25" or (query_vectors is not None and has_server_side_rrf(models)))
+        and (mode == "bm25" or (pending_vectors is not None and has_server_side_rrf(models)))
     ):
         if progress_every > 0:
-            print(f"Building sparse query vectors for {len(questions)} questions...", flush=True)
-        sparse_vectors = sparse_query_vectors([question["question"] for question in questions], sparse_model, models)
-        return search_qdrant_sparse_or_hybrid_batch(
+            print(f"Building sparse query vectors for {len(pending_questions)} pending questions...", flush=True)
+        sparse_vectors = sparse_query_vectors([question["question"] for question in pending_questions], sparse_model, models)
+        new_rows = search_qdrant_sparse_or_hybrid_batch(
             config,
-            questions=questions,
-            query_vectors=query_vectors,
+            questions=pending_questions,
+            query_vectors=pending_vectors,
             sparse_vectors=sparse_vectors,
             client=client,
             models=models,
             progress_every=progress_every,
             query_batch_size=query_batch_size,
+            checkpoint_path=checkpoint_path,
         )
+        completed_rows.update({str(row["id"]): row for row in new_rows})
+        return ordered_checkpoint_rows(questions, completed_rows)
 
     rows = []
     started_at = time.monotonic()
-    total = len(questions)
-    for index, question in enumerate(questions):
-        query_vector = query_vectors[index] if query_vectors is not None else None
-        result = search_qdrant(
-            replace(
-                config,
-                query_text=question["question"],
-                query_vector=query_vector,
-            ),
-            dense_model=dense_model,
-            sparse_model=sparse_model,
-            client=client,
-            models=models,
-        )
-        rows.append(format_competition_row(question, result))
+    total = len(pending_questions)
+    for index, question in enumerate(pending_questions):
+        query_vector = pending_vectors[index] if pending_vectors is not None else None
+        try:
+            result = search_qdrant(
+                replace(
+                    config,
+                    query_text=question["question"],
+                    query_vector=query_vector,
+                ),
+                dense_model=dense_model,
+                sparse_model=sparse_model,
+                client=client,
+                models=models,
+            )
+        except Exception as exc:
+            if not is_retryable_request_error(exc):
+                raise
+            print(f"Skipping question {question['id']} after exhausted request retries: {exc}", flush=True)
+            result = empty_search_result(config, question["question"], mode)
+        row = format_competition_row(question, result)
+        append_submission_checkpoint(checkpoint_path, row)
+        rows.append(row)
         done = index + 1
         if progress_every > 0 and (done == 1 or done == total or done % progress_every == 0):
             elapsed = time.monotonic() - started_at
             print(f"Searched {done}/{total} questions in {elapsed:.1f}s", flush=True)
-    return rows
+    completed_rows.update({str(row["id"]): row for row in rows})
+    return ordered_checkpoint_rows(questions, completed_rows)
 
 
 def search_qdrant_dense_batch(
@@ -239,6 +280,7 @@ def search_qdrant_dense_batch(
     models: Any,
     progress_every: int = 0,
     query_batch_size: int = 64,
+    checkpoint_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     query_filter = build_qdrant_filter(config, models)
     rows = []
@@ -257,7 +299,13 @@ def search_qdrant_dense_batch(
             )
             for vector in query_vectors[start:end]
         ]
-        responses = client.query_batch_points(collection_name=config.collection_name, requests=requests)
+        responses = _query_batch_points(
+            client,
+            collection_name=config.collection_name,
+            requests=requests,
+            label=f"Qdrant dense batch {start}-{end}",
+            allow_empty_on_failure=True,
+        )
         for question, response in zip(questions[start:end], responses, strict=True):
             result = {
                 "collection_name": config.collection_name,
@@ -271,7 +319,9 @@ def search_qdrant_dense_batch(
                 "filters": summarize_filters(config),
                 "results": ranked_points_to_results(_response_points(response), source="dense"),
             }
-            rows.append(format_competition_row(question, result))
+            row = format_competition_row(question, result)
+            append_submission_checkpoint(checkpoint_path, row)
+            rows.append(row)
         done = end
         if progress_every > 0 and (done == total or done % progress_every == 0 or start == 0):
             elapsed = time.monotonic() - started_at
@@ -289,6 +339,7 @@ def search_qdrant_sparse_or_hybrid_batch(
     models: Any,
     progress_every: int = 0,
     query_batch_size: int = 64,
+    checkpoint_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     mode = normalize_search_mode(config.search_mode)
     query_filter = build_qdrant_filter(config, models)
@@ -329,7 +380,13 @@ def search_qdrant_sparse_or_hybrid_batch(
                         with_vector=False,
                     )
                 )
-        responses = client.query_batch_points(collection_name=config.collection_name, requests=requests)
+        responses = _query_batch_points(
+            client,
+            collection_name=config.collection_name,
+            requests=requests,
+            label=f"Qdrant {mode} batch {start}-{end}",
+            allow_empty_on_failure=True,
+        )
         for question, response in zip(questions[start:end], responses, strict=True):
             result = {
                 "collection_name": config.collection_name,
@@ -346,7 +403,9 @@ def search_qdrant_sparse_or_hybrid_batch(
                     source="sparse" if mode == "bm25" else "hybrid",
                 ),
             }
-            rows.append(format_competition_row(question, result))
+            row = format_competition_row(question, result)
+            append_submission_checkpoint(checkpoint_path, row)
+            rows.append(row)
         done = end
         if progress_every > 0 and (done == total or done % progress_every == 0 or start == 0):
             elapsed = time.monotonic() - started_at
@@ -404,10 +463,59 @@ def write_submission(path: Path, rows: Iterable[dict[str, Any]], output_format: 
     path.write_text(json.dumps(rows, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def load_submission_checkpoint(path: Path | None) -> dict[str, dict[str, Any]]:
+    if path is None or not path.exists():
+        return {}
+    rows: dict[str, dict[str, Any]] = {}
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            question_id = row.get("id")
+            if question_id is not None:
+                rows[str(question_id)] = row
+    return rows
+
+
+def append_submission_checkpoint(path: Path | None, row: dict[str, Any]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+        handle.flush()
+
+
+def ordered_checkpoint_rows(
+    questions: list[dict[str, Any]],
+    rows_by_id: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [rows_by_id[str(question["id"])] for question in questions if str(question["id"]) in rows_by_id]
+
+
 def write_submission_zip(zip_path: Path, results_path: Path) -> None:
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(results_path, arcname="results.json")
+
+
+def empty_search_result(config: QdrantSearchConfig, query_text: str, mode: str) -> dict[str, Any]:
+    return {
+        "collection_name": config.collection_name,
+        "query_text": query_text,
+        "search_mode": mode,
+        "top_k": config.top_k,
+        "prefetch_limit": max(config.top_k, config.prefetch_limit),
+        "doc_title_format": config.doc_title_format,
+        "answer_article_limit": config.answer_article_limit,
+        "used_precomputed_dense_vector": config.query_vector is not None,
+        "filters": summarize_filters(config),
+        "results": [],
+    }
 
 
 def dense_query_vector(config: QdrantSearchConfig, *, dense_model: Any | None) -> list[float]:
@@ -721,6 +829,48 @@ def first_present(row: dict[str, Any], keys: tuple[str, ...], default: Any = "")
         if value is not None and value != "":
             return value
     return default
+
+
+def _query_points(client: Any, *, label: str, **kwargs: Any) -> Any:
+    return retry_request(lambda: client.query_points(**kwargs), label=label)
+
+
+def _query_batch_points(
+    client: Any,
+    *,
+    collection_name: str,
+    requests: list[Any],
+    label: str,
+    allow_empty_on_failure: bool = False,
+) -> list[Any | None]:
+    try:
+        return list(
+            retry_request(
+                lambda: client.query_batch_points(collection_name=collection_name, requests=requests),
+                label=label,
+            )
+        )
+    except Exception as exc:
+        if len(requests) > 1 and is_retryable_request_error(exc):
+            midpoint = len(requests) // 2
+            print(f"{label} still failed after retries; splitting into smaller batches", flush=True)
+            return _query_batch_points(
+                client,
+                collection_name=collection_name,
+                requests=requests[:midpoint],
+                label=f"{label} left",
+                allow_empty_on_failure=allow_empty_on_failure,
+            ) + _query_batch_points(
+                client,
+                collection_name=collection_name,
+                requests=requests[midpoint:],
+                label=f"{label} right",
+                allow_empty_on_failure=allow_empty_on_failure,
+            )
+        if allow_empty_on_failure and is_retryable_request_error(exc):
+            print(f"{label} failed after exhausted request retries; continuing with empty result: {exc}", flush=True)
+            return [None for _ in requests]
+        raise
 
 
 def _merge_hits(combined: dict[str, dict[str, Any]], hits: list[Any], source: str) -> None:

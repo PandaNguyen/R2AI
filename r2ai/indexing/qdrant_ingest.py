@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from itertools import islice
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from r2ai.data_ingest.phapdien import BuildPaths, build_phapdien_data
 from r2ai.indexing.config import QdrantIngestConfig
+from r2ai.indexing.retry import retry_request
 
 
 def ingest_phapdien_to_qdrant(config: QdrantIngestConfig) -> dict[str, Any]:
@@ -39,9 +41,18 @@ def ingest_phapdien_to_qdrant(config: QdrantIngestConfig) -> dict[str, Any]:
     )
     _ensure_payload_indexes(client=client, models=models, collection_name=config.collection_name)
 
+    checkpoint_path = _ingest_checkpoint_path(config.build_dir, config.collection_name)
+    if config.recreate_collection and checkpoint_path.exists():
+        checkpoint_path.unlink()
+    completed_ids = read_ingest_checkpoint(checkpoint_path)
+    if completed_ids:
+        print(f"Resuming Qdrant ingest: {len(completed_ids)} point ids already checkpointed", flush=True)
+
     total_points = 0
+    skipped_points = count_checkpointed_preview_rows(_qdrant_preview_path(config.build_dir), completed_ids, config.limit)
     preview_rows = read_qdrant_preview_rows(_qdrant_preview_path(config.build_dir), limit=config.limit)
-    for batch_index, rows in enumerate(batched(preview_rows, config.batch_size), start=1):
+    pending_rows = (row for row in preview_rows if str(row["id"]) not in completed_ids)
+    for batch_index, rows in enumerate(batched(pending_rows, config.batch_size), start=1):
         points = make_points(
             rows=rows,
             dense_model=dense_model,
@@ -50,7 +61,12 @@ def ingest_phapdien_to_qdrant(config: QdrantIngestConfig) -> dict[str, Any]:
             dense_vector_name=config.dense_vector_name,
             sparse_vector_name=config.sparse_vector_name,
         )
-        client.upsert(collection_name=config.collection_name, points=points, wait=True)
+        retry_request(
+            lambda: client.upsert(collection_name=config.collection_name, points=points, wait=True),
+            label=f"Qdrant upsert batch {batch_index}",
+        )
+        append_ingest_checkpoint(checkpoint_path, rows)
+        completed_ids.update(str(row["id"]) for row in rows)
         total_points += len(points)
         print(f"Upserted batch {batch_index}: {len(points)} points, total={total_points}")
 
@@ -60,6 +76,8 @@ def ingest_phapdien_to_qdrant(config: QdrantIngestConfig) -> dict[str, Any]:
         "sparse_model": config.sparse_model_name,
         "dense_size": dense_size,
         "points_upserted": total_points,
+        "points_skipped_from_checkpoint": max(0, skipped_points),
+        "checkpoint": str(checkpoint_path),
     }
 
 
@@ -79,6 +97,36 @@ def batched(rows: Iterable[dict[str, Any]], batch_size: int) -> Iterator[list[di
         if not batch:
             return
         yield batch
+
+
+def count_checkpointed_preview_rows(path: Path, completed_ids: set[str], limit: int | None = None) -> int:
+    return sum(1 for row in read_qdrant_preview_rows(path, limit=limit) if str(row["id"]) in completed_ids)
+
+
+def read_ingest_checkpoint(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    completed: set[str] = set()
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            point_id = row.get("id")
+            if point_id is not None:
+                completed.add(str(point_id))
+    return completed
+
+
+def append_ingest_checkpoint(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(json.dumps({"id": row["id"]}, ensure_ascii=False) + "\n")
+        handle.flush()
 
 
 def make_points(
@@ -118,6 +166,11 @@ def make_points(
 
 def _qdrant_preview_path(build_dir: Path) -> Path:
     return build_dir / "qdrant_payload_preview.jsonl"
+
+
+def _ingest_checkpoint_path(build_dir: Path, collection_name: str) -> Path:
+    safe_collection = re.sub(r"[^A-Za-z0-9_.-]+", "_", collection_name).strip("_") or "collection"
+    return build_dir / f"qdrant_ingest_checkpoint_{safe_collection}.jsonl"
 
 
 def _preferred_torch_device() -> str:
@@ -170,20 +223,32 @@ def _ensure_collection(
     dense_size: int,
     recreate: bool,
 ) -> None:
-    if recreate and client.collection_exists(collection_name=collection_name):
-        client.delete_collection(collection_name=collection_name)
+    if recreate and retry_request(
+        lambda: client.collection_exists(collection_name=collection_name),
+        label=f"Qdrant collection_exists {collection_name}",
+    ):
+        retry_request(
+            lambda: client.delete_collection(collection_name=collection_name),
+            label=f"Qdrant delete_collection {collection_name}",
+        )
 
-    if client.collection_exists(collection_name=collection_name):
+    if retry_request(
+        lambda: client.collection_exists(collection_name=collection_name),
+        label=f"Qdrant collection_exists {collection_name}",
+    ):
         return
 
-    client.create_collection(
-        collection_name=collection_name,
-        vectors_config={
-            dense_vector_name: models.VectorParams(size=dense_size, distance=models.Distance.COSINE),
-        },
-        sparse_vectors_config={
-            sparse_vector_name: models.SparseVectorParams(modifier=models.Modifier.IDF),
-        },
+    retry_request(
+        lambda: client.create_collection(
+            collection_name=collection_name,
+            vectors_config={
+                dense_vector_name: models.VectorParams(size=dense_size, distance=models.Distance.COSINE),
+            },
+            sparse_vectors_config={
+                sparse_vector_name: models.SparseVectorParams(modifier=models.Modifier.IDF),
+            },
+        ),
+        label=f"Qdrant create_collection {collection_name}",
     )
 
 
@@ -198,11 +263,14 @@ def _ensure_payload_indexes(client: Any, models: Any, collection_name: str) -> N
     }
     for field_name, field_schema in field_schemas.items():
         try:
-            client.create_payload_index(
-                collection_name=collection_name,
-                field_name=field_name,
-                field_schema=field_schema,
-                wait=True,
+            retry_request(
+                lambda: client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field_name,
+                    field_schema=field_schema,
+                    wait=True,
+                ),
+                label=f"Qdrant create_payload_index {field_name}",
             )
         except Exception as exc:  # Qdrant returns an error when an index already exists.
             print(f"Skipped payload index {field_name}: {exc}")

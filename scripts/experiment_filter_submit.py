@@ -32,8 +32,11 @@ from r2ai.indexing.config import (
     QdrantSearchConfig,
 )
 from r2ai.indexing.qdrant_ingest import _load_sparse_model, _make_qdrant_client
+from r2ai.indexing.retry import is_retryable_request_error
 from r2ai.retrieval.qdrant_search import (
+    append_submission_checkpoint,
     format_competition_row,
+    load_submission_checkpoint,
     load_query_vectors,
     load_questions,
     payload_to_competition_articles,
@@ -130,6 +133,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-topic-branches", action="store_true")
     parser.add_argument("--answer-article-limit", type=int, default=None)
     parser.add_argument("--debug-output", type=Path, default=None)
+    parser.add_argument(
+        "--checkpoint-output",
+        type=Path,
+        default=None,
+        help="JSONL checkpoint for completed question predictions; defaults to <output>.checkpoint.jsonl",
+    )
+    parser.add_argument("--no-resume", action="store_true")
     return parser.parse_args()
 
 
@@ -147,6 +157,17 @@ def main() -> None:
     if args.limit and args.limit > 0:
         questions = questions[: args.limit]
         query_vectors = query_vectors[: args.limit]
+    checkpoint_output = None if args.no_resume else args.checkpoint_output or args.output.with_name(f"{args.output.name}.checkpoint.jsonl")
+    completed_rows = load_submission_checkpoint(checkpoint_output)
+    if completed_rows:
+        print(f"Resuming experiment: {len(completed_rows)} question ids already checkpointed", flush=True)
+    pending_questions = []
+    pending_vectors = []
+    for question, vector in zip(questions, query_vectors, strict=True):
+        if str(question["id"]) in completed_rows:
+            continue
+        pending_questions.append(question)
+        pending_vectors.append(vector)
 
     qdrant_url = os.getenv("QDRANT_URL", "").strip()
     qdrant_api_key = os.getenv("QDRANT_API_KEY", "").strip()
@@ -166,10 +187,10 @@ def main() -> None:
         answer_article_limit=args.answer_article_limit,
     )
 
-    rows: list[dict[str, Any]] = []
+    rows_by_id: dict[str, dict[str, Any]] = dict(completed_rows)
     debug_rows: list[dict[str, Any]] = []
     started_at = time.monotonic()
-    for index, (question, vector) in enumerate(zip(questions, query_vectors, strict=True), start=1):
+    for index, (question, vector) in enumerate(zip(pending_questions, pending_vectors, strict=True), start=1):
         domains = detect_domains(question["question"], max_domains=args.max_domains)
         candidates: dict[str, dict[str, Any]] = {}
 
@@ -223,21 +244,26 @@ def main() -> None:
             "answer_article_limit": args.answer_article_limit,
             "results": rerank_candidates(candidates, limit=args.top_k),
         }
-        rows.append(format_competition_row(question, result))
+        row = format_competition_row(question, result)
+        rows_by_id[str(question["id"])] = row
+        append_submission_checkpoint(checkpoint_output, row)
         debug_rows.append(
             {
                 "id": question["id"],
                 "domains": domains,
                 "branches": branch_descriptions,
                 "candidate_count": len(candidates),
-                "submitted_articles": rows[-1]["relevant_articles"],
+                "submitted_articles": row["relevant_articles"],
             }
         )
 
-        if args.progress_every > 0 and (index == 1 or index == len(questions) or index % args.progress_every == 0):
+        if args.progress_every > 0 and (
+            index == 1 or index == len(pending_questions) or index % args.progress_every == 0
+        ):
             elapsed = time.monotonic() - started_at
-            print(f"Processed {index}/{len(questions)} questions in {elapsed:.1f}s", flush=True)
+            print(f"Processed {index}/{len(pending_questions)} pending questions in {elapsed:.1f}s", flush=True)
 
+    rows = [rows_by_id[str(question["id"])] for question in questions if str(question["id"]) in rows_by_id]
     write_submission(args.output, rows)
     if args.zip_output:
         write_submission_zip(args.zip_output, args.output)
@@ -304,12 +330,25 @@ def run_branch(
     branch_name: str,
     weight: float,
 ) -> dict[str, Any]:
-    result = search_qdrant(
-        replace(config, query_text=question["question"], query_vector=vector),
-        sparse_model=sparse_model,
-        client=client,
-        models=models,
-    )
+    try:
+        result = search_qdrant(
+            replace(config, query_text=question["question"], query_vector=vector),
+            sparse_model=sparse_model,
+            client=client,
+            models=models,
+        )
+    except Exception as exc:
+        if not is_retryable_request_error(exc):
+            raise
+        print(
+            f"Skipping {branch_name} branch for question {question['id']} after exhausted request retries: {exc}",
+            flush=True,
+        )
+        result = {
+            "doc_title_format": config.doc_title_format,
+            "answer_article_limit": config.answer_article_limit,
+            "results": [],
+        }
     result["branch_name"] = branch_name
     result["branch_weight"] = weight
     return result

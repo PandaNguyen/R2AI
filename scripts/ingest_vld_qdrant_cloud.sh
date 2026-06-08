@@ -19,6 +19,23 @@ COLLECTION="${QDRANT_COLLECTION:-vld_business_law}"
 
 mkdir -p "$MODEL_CACHE_DIR" "$UV_CACHE_DIR" "$HF_HOME" "$PIP_CACHE_DIR" "$TMPDIR"
 
+run_with_retries() {
+  local label="$1"
+  shift
+  local attempts="${R2AI_PIPELINE_RETRIES:-20}"
+  local delay="${R2AI_PIPELINE_RETRY_DELAY:-30}"
+  local attempt=1
+  until "$@"; do
+    if (( attempt >= attempts )); then
+      echo "$label failed after $attempt/$attempts attempts." >&2
+      return 1
+    fi
+    echo "$label failed on attempt $attempt/$attempts. Sleeping ${delay}s before continuing..." >&2
+    sleep "$delay"
+    attempt=$((attempt + 1))
+  done
+}
+
 if [[ -z "${QDRANT_URL:-}" ]]; then
   echo "Missing QDRANT_URL. Set it as a Kaggle secret/env var before running." >&2
   exit 1
@@ -30,12 +47,12 @@ if [[ -z "${QDRANT_API_KEY:-}" ]]; then
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
-  python -m pip install -q uv
+  run_with_retries "Install uv" python -m pip install -q uv
 fi
 
-uv sync --extra data --extra ingest
+run_with_retries "uv sync" uv sync --extra data --extra ingest
 
-uv run python scripts/ensure_vld_data.py \
+run_with_retries "Ensure VLD data" uv run python scripts/ensure_vld_data.py \
   --source-dir "$DATA_DIR" \
   --repo-id "$VLD_REPO_ID" \
   --git-url "$VLD_GIT_URL" \
@@ -60,7 +77,11 @@ if [[ -n "${R2AI_VLD_LIMIT:-}" ]]; then
   BUILD_ARGS+=(--limit "$R2AI_VLD_LIMIT")
 fi
 
-uv run python "${BUILD_ARGS[@]}"
+if [[ "${R2AI_FORCE_REBUILD:-0}" == "1" ]]; then
+  BUILD_ARGS+=(--force-rebuild)
+fi
+
+run_with_retries "Build VLD Qdrant artifacts" uv run python "${BUILD_ARGS[@]}"
 
 if [[ "${R2AI_DROP_DATA_AFTER_BUILD:-1}" == "1" && "$DATA_DIR" == "$KAGGLE_TEMP"* ]]; then
   echo "Dropping temporary VLD parquet data after build to save disk: $DATA_DIR"
@@ -89,7 +110,7 @@ if [[ -n "${R2AI_INGEST_LIMIT:-}" ]]; then
   INGEST_ARGS+=(--limit "$R2AI_INGEST_LIMIT")
 fi
 
-uv run r2ai "${INGEST_ARGS[@]}"
+run_with_retries "Ingest VLD Qdrant artifacts" uv run r2ai "${INGEST_ARGS[@]}"
 
 if [[ "${R2AI_CLEANUP_AFTER_INGEST:-0}" == "1" && "$BUILD_DIR" == "$KAGGLE_TEMP"* ]]; then
   echo "Dropping temporary VLD build artifacts after ingest: $BUILD_DIR"
