@@ -140,6 +140,7 @@ def build_artifacts(args: argparse.Namespace) -> dict[str, Any]:
                         document,
                         max_text_tokens=args.max_text_tokens,
                         table_rows_per_chunk=args.table_rows_per_chunk,
+                        overlap_tokens=args.overlap_tokens,
                     )
                 except Exception as exc:  # Keep long Kaggle jobs moving.
                     errors.append({"document_id": doc_id, "error": str(exc)})
@@ -182,6 +183,7 @@ def build_artifacts(args: argparse.Namespace) -> dict[str, Any]:
         "chunking": {
             "tokenizer": "tiktoken/cl100k_base",
             "max_text_tokens": args.max_text_tokens,
+            "overlap_tokens": args.overlap_tokens,
             "table_rows_per_chunk": args.table_rows_per_chunk,
         },
         "metadata": metadata_report,
@@ -217,6 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=Path("build/vld_business_scope"))
     parser.add_argument("--min-year", type=int, default=2010)
     parser.add_argument("--max-text-tokens", type=int, default=2048)
+    parser.add_argument("--overlap-tokens", type=int, default=256)
     parser.add_argument("--table-rows-per-chunk", type=int, default=8)
     parser.add_argument("--ids-file", type=Path)
     parser.add_argument("--limit", type=int, default=0, help="Optional document limit for smoke tests.")

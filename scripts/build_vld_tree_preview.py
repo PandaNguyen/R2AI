@@ -37,6 +37,7 @@ NODE_PARENT_TYPES: dict[str, tuple[str, ...]] = {
     "chapter": ("part", "document"),
     "section": ("chapter", "part", "document", "appendix"),
     "subsection": ("section", "chapter", "part", "document", "appendix"),
+    "appendix_section": ("appendix", "appendix_section"),
     "article": ("subsection", "section", "chapter", "part", "document"),
     "clause": ("article",),
     "point": ("clause", "article"),
@@ -58,6 +59,16 @@ FOOTER_RE = re.compile(r"^(?:Nơi nhận|TM\.|KT\.|CHỦ TỊCH|BỘ TRƯỞNG|T
 TABLE_LINE_RE = re.compile(r"^\s*\|.*\|\s*$")
 UPPER_HINT_RE = re.compile(r"[A-ZÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴĐ]{3,}")
 WHITESPACE_RE = re.compile(r"[ \t\r\f\v]+")
+APPENDIX_SECTION_RE = re.compile(r"^(?P<num>[A-Z]|[IVXLCDM]+)\.\s+(?P<title>[A-ZÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴĐ].+)$")
+ATTACHMENT_TABLE_RE = re.compile(r"FILE ĐƯỢC ĐÍNH KÈM|Tải về|Download|Chữ ký số", re.IGNORECASE)
+FORM_CODE_RE = re.compile(
+    r"^(?P<num>BM\s*\d+[A-Za-z]?|Mẫu\s+số\s*:?\s*[\w./-]+|MẪU\s+SỐ\s*:?\s*[\w./-]+)\s*$",
+    re.IGNORECASE,
+)
+SUBSTANTIVE_TABLE_RE = re.compile(
+    r"\b(STT|TT|Tên|Mã|Thời gian|Thời hạn|Căn cứ|Bước|Cơ quan|Hồ sơ|Diện tích|Phí|Lệ phí|Trách nhiệm)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -190,6 +201,17 @@ def parse_structural_line(line: str, line_no: int, active_path: list[TreeNode]) 
         label = "Danh mục" if stripped.lower().startswith("danh mục") else "Mẫu số"
         return make_node("appendix", label, line_no, title=title), ""
 
+    match = FORM_CODE_RE.match(stripped)
+    if match:
+        number = normalize(match.group("num")).upper()
+        return make_node("appendix", number, line_no, number=number), ""
+
+    match = APPENDIX_SECTION_RE.match(stripped)
+    if match and has_ancestor(active_path, "appendix"):
+        number = normalize(match.group("num"))
+        title = normalize(match.group("title"))
+        return make_node("appendix_section", f"{number}.", line_no, number=number, title=title), ""
+
     match = CLAUSE_RE.match(stripped)
     if match and has_ancestor(active_path, "article"):
         number = normalize(match.group("num"))
@@ -204,7 +226,7 @@ def parse_structural_line(line: str, line_no: int, active_path: list[TreeNode]) 
 
     match = BULLET_RE.match(stripped)
     if match and (has_ancestor(active_path, "point") or has_ancestor(active_path, "clause")):
-        return make_node("subpoint", "Ý", line_no), normalize(match.group("body"))
+        return make_node("subpoint", "-", line_no), normalize(match.group("body"))
 
     return None, ""
 
@@ -225,6 +247,14 @@ def maybe_absorb_title(active_path: list[TreeNode], line: str, line_no: int) -> 
 
 
 def parse_table(lines: list[tuple[int, str]]) -> dict[str, Any]:
+    raw_markdown = "\n".join(line for _, line in lines)
+    if ATTACHMENT_TABLE_RE.search(raw_markdown):
+        return {
+            "type": "attachment",
+            "text": raw_markdown,
+            "line_start": lines[0][0],
+            "line_end": lines[-1][0],
+        }
     parsed_rows = [split_table_row(line) for _, line in lines]
     useful_rows = [row for row in parsed_rows if any(cell for cell in row) and not is_separator_row(row)]
     headers = useful_rows[0] if useful_rows else []
@@ -236,7 +266,7 @@ def parse_table(lines: list[tuple[int, str]]) -> dict[str, Any]:
         "rows": rows,
         "row_count": len(rows),
         "column_count": max((len(row) for row in useful_rows), default=0),
-        "raw_markdown": "\n".join(line for _, line in lines),
+        "raw_markdown": raw_markdown,
         "line_start": lines[0][0],
         "line_end": lines[-1][0],
     }
@@ -285,11 +315,17 @@ def build_tree(row: dict[str, Any], content: str) -> dict[str, Any]:
     for line_no, raw_line in enumerate(content.splitlines(), start=1):
         line = normalize(raw_line)
         if not line:
+            if table_buffer:
+                append_table(active_path, table_buffer)
+                table_buffer = []
             flush_text_buffer(active_path, text_buffer)
             continue
 
         if is_table_line(line):
             flush_text_buffer(active_path, text_buffer)
+            if current_node(active_path).type == "footer" and is_substantive_table_line(line):
+                recovered = make_node("appendix", "Nội dung sau chữ ký", line_no)
+                active_path = attach_node(root, active_path, recovered)
             table_buffer.append((line_no, line))
             continue
         if table_buffer:
@@ -318,7 +354,7 @@ def build_tree(row: dict[str, Any], content: str) -> dict[str, Any]:
             )
             continue
 
-        if FOOTER_RE.match(line):
+        if is_footer_line(root, line, line_no):
             flush_text_buffer(active_path, text_buffer)
             footer = make_node("footer", "Footer", line_no)
             active_path = attach_footer(root, active_path, footer)
@@ -352,6 +388,32 @@ def build_tree(row: dict[str, Any], content: str) -> dict[str, Any]:
         },
         "tree": materialize_node(root, []),
     }
+
+
+def is_footer_line(root: TreeNode, line: str, line_no: int) -> bool:
+    if not FOOTER_RE.match(line):
+        return False
+    if line.lower().startswith("nơi nhận"):
+        return True
+    # Issuing authorities often start with "CHỦ TỊCH..." or "BỘ TRƯỞNG..."
+    # near the top. Treat signature-like lines as footer only after the parser
+    # has seen real legal structure.
+    return line_no > 20 and has_structural_children(root)
+
+
+def is_substantive_table_line(line: str) -> bool:
+    if ATTACHMENT_TABLE_RE.search(line):
+        return False
+    return bool(SUBSTANTIVE_TABLE_RE.search(line))
+
+
+def has_structural_children(node: TreeNode) -> bool:
+    for child in node.children:
+        if child.type not in {"footer"}:
+            return True
+        if has_structural_children(child):
+            return True
+    return False
 
 
 def attach_footer(root: TreeNode, active_path: list[TreeNode], footer: TreeNode) -> list[TreeNode]:

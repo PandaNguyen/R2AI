@@ -115,15 +115,11 @@ def surface_node_text(node: dict[str, Any], text: str) -> str:
 
 def ancestor_context(document: dict[str, Any], ancestors: list[dict[str, Any]], current: dict[str, Any]) -> str:
     metadata = document["metadata"]
-    pieces = [
-        normalize(metadata.get("document_number")),
-        normalize(metadata.get("title")),
-    ]
-    context_parts = [" ".join(part for part in pieces if part)]
+    context_parts = [document_context(metadata)]
 
     for node in ancestors[1:]:  # skip document root
         node_type = node.get("type")
-        if node_type in {"part", "chapter", "section", "subsection", "article", "appendix"}:
+        if node_type in {"part", "chapter", "section", "subsection", "article", "appendix", "appendix_section"}:
             display = normalize(node.get("display"))
             if display:
                 context_parts.append(display)
@@ -137,7 +133,7 @@ def ancestor_context(document: dict[str, Any], ancestors: list[dict[str, Any]], 
                 if marker:
                     context_parts.append(marker)
 
-    if current.get("type") in {"part", "chapter", "section", "subsection", "article", "appendix"}:
+    if current.get("type") in {"part", "chapter", "section", "subsection", "article", "appendix", "appendix_section"}:
         display = normalize(current.get("display"))
         if display and display not in context_parts:
             context_parts.append(display)
@@ -145,10 +141,20 @@ def ancestor_context(document: dict[str, Any], ancestors: list[dict[str, Any]], 
     return join_natural(context_parts)
 
 
-def split_long_text(text: str, max_tokens: int) -> list[str]:
+def document_context(metadata: dict[str, Any]) -> str:
+    document_number = normalize(metadata.get("document_number"))
+    title = normalize(metadata.get("title"))
+    if document_number and document_number.lower() in title.lower():
+        return title
+    return " ".join(part for part in [document_number, title] if part)
+
+
+def split_long_text(text: str, max_tokens: int, overlap_tokens: int = 0) -> list[str]:
     text = normalize(text)
     if not text or count_tokens(text) <= max_tokens:
         return [text] if text else []
+    if overlap_tokens > 0:
+        return split_sentence_windows(text, max_tokens, overlap_tokens)
 
     sentences = [part.strip() for part in SENTENCE_SPLIT_RE.split(text) if part.strip()]
     if len(sentences) <= 1:
@@ -183,6 +189,116 @@ def split_long_text(text: str, max_tokens: int) -> list[str]:
         current_tokens += sentence_tokens
     if current:
         chunks.append(" ".join(current).strip())
+    return chunks
+
+
+def split_sentence_windows(text: str, max_tokens: int, overlap_tokens: int) -> list[str]:
+    text = normalize(text)
+    if count_tokens(text) <= max_tokens:
+        return [normalize(text)] if text else []
+    if max_tokens <= 0:
+        return []
+    overlap_tokens = max(0, min(overlap_tokens, max_tokens - 1))
+    chunks: list[str] = []
+
+    sentences = [part.strip() for part in SENTENCE_SPLIT_RE.split(text) if part.strip()]
+    if len(sentences) <= 1:
+        return split_word_windows(text, max_tokens, overlap_tokens)
+
+    current: list[str] = []
+    current_tokens = 0
+
+    def flush_with_overlap() -> None:
+        nonlocal current, current_tokens
+        if not current:
+            return
+        chunks.append(" ".join(current).strip())
+        current = sentence_overlap_tail(current, overlap_tokens, max_tokens)
+        current_tokens = sum(count_tokens(sentence) for sentence in current)
+
+    for sentence in sentences:
+        sentence_tokens = count_tokens(sentence)
+        if sentence_tokens > max_tokens:
+            flush_with_overlap()
+            if current:
+                current = []
+                current_tokens = 0
+            chunks.extend(split_word_windows(sentence, max_tokens, overlap_tokens))
+            continue
+        if current and current_tokens + sentence_tokens > max_tokens:
+            flush_with_overlap()
+            if current and current_tokens + sentence_tokens > max_tokens:
+                current = []
+                current_tokens = 0
+        current.append(sentence)
+        current_tokens += sentence_tokens
+    if current:
+        chunks.append(" ".join(current).strip())
+    return chunks
+
+
+def sentence_overlap_tail(sentences: list[str], overlap_tokens: int, max_tokens: int) -> list[str]:
+    if overlap_tokens <= 0 or not sentences:
+        return []
+    tail: list[str] = []
+    total = 0
+    for sentence in reversed(sentences):
+        sentence_tokens = count_tokens(sentence)
+        if tail and total + sentence_tokens > overlap_tokens:
+            break
+        if not tail and sentence_tokens > overlap_tokens:
+            return split_word_windows(sentence, max_tokens=overlap_tokens, overlap_tokens=0)[-1:]
+        tail.insert(0, sentence)
+        total += sentence_tokens
+    return tail
+
+
+def split_word_windows(text: str, max_tokens: int, overlap_tokens: int) -> list[str]:
+    words = normalize(text).split()
+    if not words:
+        return []
+    chunks: list[str] = []
+    current: list[str] = []
+    current_tokens = 0
+    overlap_tokens = max(0, min(overlap_tokens, max_tokens - 1))
+
+    def word_tail(words_: list[str]) -> list[str]:
+        if overlap_tokens <= 0:
+            return []
+        tail: list[str] = []
+        total = 0
+        for word in reversed(words_):
+            word_tokens = count_tokens(word)
+            if tail and total + word_tokens > overlap_tokens:
+                break
+            if not tail and word_tokens > overlap_tokens:
+                break
+            tail.insert(0, word)
+            total += word_tokens
+        return tail
+
+    for word in words:
+        word_tokens = count_tokens(word)
+        if word_tokens > max_tokens:
+            if current:
+                chunks.append(" ".join(current))
+                current = word_tail(current)
+                current_tokens = sum(count_tokens(item) for item in current)
+            chunks.append(word)
+            current = []
+            current_tokens = 0
+            continue
+        if current and current_tokens + word_tokens > max_tokens:
+            chunks.append(" ".join(current))
+            current = word_tail(current)
+            current_tokens = sum(count_tokens(item) for item in current)
+            if current and current_tokens + word_tokens > max_tokens:
+                current = []
+                current_tokens = 0
+        current.append(word)
+        current_tokens += word_tokens
+    if current:
+        chunks.append(" ".join(current))
     return chunks
 
 
@@ -352,7 +468,12 @@ def nearest_ancestor_display(nodes: list[dict[str, Any]], node_type: str, *, lab
     return normalize(node.get("label") if label_only else node.get("display"))
 
 
-def build_chunks_for_tree(document: dict[str, Any], max_text_tokens: int, table_rows_per_chunk: int) -> list[dict[str, Any]]:
+def build_chunks_for_tree(
+    document: dict[str, Any],
+    max_text_tokens: int,
+    table_rows_per_chunk: int,
+    overlap_tokens: int = 256,
+) -> list[dict[str, Any]]:
     chunks: list[dict[str, Any]] = []
     ordinal = 0
 
@@ -373,59 +494,155 @@ def build_chunks_for_tree(document: dict[str, Any], max_text_tokens: int, table_
         ordinal += 1
 
     def visit(node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
+        if node.get("type") == "article":
+            add_article_text_chunks(node, ancestors)
+            visit_tables_only(node, ancestors)
+            return
+
         for block_index, block in enumerate(node.get("blocks", [])):
-            block_type = block.get("type")
-            if block_type == "text":
-                if not is_indexable_text_node(node):
-                    continue
-                surface = surface_node_text(node, block.get("text", ""))
-                context_budget = content_budget(document, ancestors, node, max_text_tokens)
-                for piece in split_long_text(surface, max_tokens=context_budget):
-                    add_chunk(node, ancestors, text_chunk_type(node), piece, block)
-            elif block_type == "heading":
-                # Headings are useful as context for following tables but rarely
-                # worth standalone chunks.
-                continue
-            elif block_type == "table":
-                table_id = f"{node.get('node_id')}:table:{block_index:03d}"
-                table_context = " ".join(
-                    part
-                    for part in [
-                        normalize(block.get("caption")),
-                        " ".join(normalize(cell) for cell in block.get("headers") or []),
-                    ]
-                    if part
-                )
-                table_budget = content_budget(
-                    document,
-                    ancestors,
-                    node,
-                    max_text_tokens,
-                    extra_context=table_context,
-                )
-                for table_piece in chunk_table_rows(
-                    block,
-                    max_rows=table_rows_per_chunk,
-                    max_tokens=table_budget,
-                ):
-                    text = f"{table_context}. {table_piece['text']}".strip(". ")
-                    add_chunk(
-                        node,
-                        ancestors,
-                        "table_chunk",
-                        text,
-                        block,
-                        table_info={
-                            "table_id": table_id,
-                            "caption": normalize(block.get("caption")),
-                            "headers": [normalize(cell) for cell in block.get("headers") or []],
-                            "row_start": table_piece["row_start"],
-                            "row_end": table_piece["row_end"],
-                            "total_rows": block.get("row_count"),
-                        },
-                    )
+            if block.get("type") == "table":
+                add_table_chunks(node, ancestors, block_index, block)
         for child in node.get("children", []):
             visit(child, ancestors + [node])
+
+    def add_article_text_chunks(article_node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
+        items = collect_subtree_text_items(article_node)
+        if not items:
+            return
+        text = render_text_items(items)
+        budget = content_budget(document, ancestors, article_node, max_text_tokens)
+        if count_tokens(text) <= budget:
+            add_chunk(article_node, ancestors, "article_text_chunk", text, merge_item_blocks(items))
+            return
+
+        units = make_child_units(article_node, ancestors, include_self_text=True)
+        pack_units(article_node, ancestors, units, "article_split_chunk", budget)
+
+    def add_clause_text_chunks(clause_node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
+        items = collect_subtree_text_items(clause_node)
+        if not items:
+            return
+        text = render_text_items(items)
+        budget = content_budget(document, ancestors, clause_node, max_text_tokens)
+        if count_tokens(text) <= budget:
+            add_chunk(clause_node, ancestors, "clause_text_chunk", text, merge_item_blocks(items))
+            return
+
+        units = make_child_units(clause_node, ancestors, include_self_text=True)
+        pack_units(clause_node, ancestors, units, "clause_split_chunk", budget)
+
+    def add_point_text_chunks(point_node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
+        items = collect_subtree_text_items(point_node)
+        if not items:
+            return
+        text = render_text_items(items)
+        budget = content_budget(document, ancestors, point_node, max_text_tokens)
+        if count_tokens(text) <= budget:
+            add_chunk(point_node, ancestors, "point_text_chunk", text, merge_item_blocks(items))
+            return
+
+        units = make_child_units(point_node, ancestors, include_self_text=True)
+        pack_units(point_node, ancestors, units, "point_split_chunk", budget)
+
+    def pack_units(
+        container_node: dict[str, Any],
+        container_ancestors: list[dict[str, Any]],
+        units: list[dict[str, Any]],
+        chunk_type: str,
+        budget: int,
+    ) -> None:
+        current_units: list[dict[str, Any]] = []
+        current_tokens = 0
+
+        def flush() -> None:
+            nonlocal current_units, current_tokens
+            if not current_units:
+                return
+            pack_text = "\n".join(unit["text"] for unit in current_units).strip()
+            add_chunk(
+                container_node,
+                container_ancestors,
+                chunk_type,
+                pack_text,
+                merge_item_blocks_from_units(current_units),
+            )
+            current_units = []
+            current_tokens = 0
+
+        for unit in units:
+            unit_tokens = count_tokens(unit["text"])
+            if unit_tokens > budget:
+                flush()
+                split_oversize_unit(unit)
+                continue
+            if current_units and current_tokens + unit_tokens > budget:
+                flush()
+            current_units.append(unit)
+            current_tokens += unit_tokens
+        flush()
+
+    def split_oversize_unit(unit: dict[str, Any]) -> None:
+        node = unit["node"]
+        ancestors = unit["ancestors"]
+        node_type = node.get("type")
+        if node_type == "clause":
+            if unit.get("scope") == "subtree":
+                add_clause_text_chunks(node, ancestors)
+                return
+        if node_type == "point":
+            if unit.get("scope") == "subtree":
+                add_point_text_chunks(node, ancestors)
+                return
+
+        budget = content_budget(document, ancestors, node, max_text_tokens)
+        for piece in split_long_text(unit["text"], max_tokens=budget, overlap_tokens=overlap_tokens):
+            add_chunk(node, ancestors, text_chunk_type(node), piece, unit["block"])
+
+    def visit_tables_only(node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
+        for block_index, block in enumerate(node.get("blocks", [])):
+            if block.get("type") == "table":
+                add_table_chunks(node, ancestors, block_index, block)
+        for child in node.get("children", []):
+            visit_tables_only(child, ancestors + [node])
+
+    def add_table_chunks(node: dict[str, Any], ancestors: list[dict[str, Any]], block_index: int, block: dict[str, Any]) -> None:
+        table_id = f"{node.get('node_id')}:table:{block_index:03d}"
+        table_context = " ".join(
+            part
+            for part in [
+                normalize(block.get("caption")),
+                " ".join(normalize(cell) for cell in block.get("headers") or []),
+            ]
+            if part
+        )
+        table_budget = content_budget(
+            document,
+            ancestors,
+            node,
+            max_text_tokens,
+            extra_context=table_context,
+        )
+        for table_piece in chunk_table_rows(
+            block,
+            max_rows=table_rows_per_chunk,
+            max_tokens=table_budget,
+        ):
+            text = f"{table_context}. {table_piece['text']}".strip(". ")
+            add_chunk(
+                node,
+                ancestors,
+                "table_chunk",
+                text,
+                block,
+                table_info={
+                    "table_id": table_id,
+                    "caption": normalize(block.get("caption")),
+                    "headers": [normalize(cell) for cell in block.get("headers") or []],
+                    "row_start": table_piece["row_start"],
+                    "row_end": table_piece["row_end"],
+                    "total_rows": block.get("row_count"),
+                },
+            )
 
     visit(document["tree"], [])
     chunk_count = len(chunks)
@@ -433,6 +650,100 @@ def build_chunks_for_tree(document: dict[str, Any], max_text_tokens: int, table_
         chunk["chunk_index"] = index
         chunk["chunk_count"] = chunk_count
     return chunks
+
+
+def collect_own_text_items(node: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if not is_indexable_text_node(node):
+        return items
+    for block in node.get("blocks", []):
+        if block.get("type") != "text":
+            continue
+        text = surface_node_text(node, block.get("text", ""))
+        if text:
+            items.append({"text": text, "block": block, "node": node})
+    return items
+
+
+def collect_subtree_text_items(node: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+
+    def visit(node: dict[str, Any]) -> None:
+        items.extend(collect_own_text_items(node))
+        for child in node.get("children", []):
+            visit(child)
+
+    visit(node)
+    return items
+
+
+def render_text_items(items: list[dict[str, Any]]) -> str:
+    return "\n".join(normalize(item.get("text")) for item in items if normalize(item.get("text"))).strip()
+
+
+def make_child_units(
+    container_node: dict[str, Any],
+    container_ancestors: list[dict[str, Any]],
+    *,
+    include_self_text: bool,
+) -> list[dict[str, Any]]:
+    units: list[dict[str, Any]] = []
+    if include_self_text:
+        self_items = collect_own_text_items(container_node)
+        if self_items:
+            units.append(
+                {
+                    "node": container_node,
+                    "ancestors": container_ancestors,
+                    "text": render_text_items(self_items),
+                    "items": self_items,
+                    "block": merge_item_blocks(self_items),
+                    "scope": "own",
+                }
+            )
+
+    for child in container_node.get("children", []):
+        if not is_indexable_text_node(child):
+            continue
+        items = collect_subtree_text_items(child)
+        if not items:
+            continue
+        units.append(
+            {
+                "node": child,
+                "ancestors": container_ancestors + [container_node],
+                "text": render_text_items(items),
+                "items": items,
+                "block": merge_item_blocks(items),
+                "scope": "subtree",
+            }
+        )
+    return units
+
+
+def merge_item_blocks(items: list[dict[str, Any]]) -> dict[str, Any]:
+    return merge_blocks([item["block"] for item in items if item.get("block")])
+
+
+def merge_item_blocks_from_units(units: list[dict[str, Any]]) -> dict[str, Any]:
+    blocks: list[dict[str, Any]] = []
+    for unit in units:
+        for item in unit.get("items") or []:
+            if item.get("block"):
+                blocks.append(item["block"])
+    if not blocks:
+        blocks = [unit["block"] for unit in units if unit.get("block")]
+    return merge_blocks(blocks)
+
+
+def merge_blocks(blocks: list[dict[str, Any]]) -> dict[str, Any]:
+    line_starts = [block.get("line_start") for block in blocks if block.get("line_start") is not None]
+    line_ends = [block.get("line_end") for block in blocks if block.get("line_end") is not None]
+    return {
+        "type": "text",
+        "line_start": min(line_starts) if line_starts else None,
+        "line_end": max(line_ends) if line_ends else None,
+    }
 
 
 def content_budget(
@@ -485,6 +796,44 @@ def make_qdrant_preview(chunk: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def make_chunk_text_preview(chunk: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "chunk_id": chunk["chunk_id"],
+        "document_id": chunk["document_id"],
+        "document_number": chunk["document_number"],
+        "document_title": chunk["document_title"],
+        "chunk_type": chunk["chunk_type"],
+        "token_estimate": chunk["token_estimate"],
+        "node_type": chunk["node_type"],
+        "article_no_normalized": chunk["article_no_normalized"],
+        "article_title": chunk["article_title"],
+        "legal_path_text": chunk["legal_path_text"],
+        "contains_table": chunk["contains_table"],
+        "table_headers": chunk["table_headers"],
+        "table_row_start": chunk["table_row_start"],
+        "table_row_end": chunk["table_row_end"],
+        "line_start": chunk["line_start"],
+        "line_end": chunk["line_end"],
+        "retrieval_text": chunk["retrieval_text"],
+    }
+
+
+def has_duplicated_document_number(chunk: dict[str, Any]) -> bool:
+    document_number = normalize(chunk.get("document_number"))
+    if not document_number:
+        return False
+    words = normalize(chunk.get("retrieval_text")).split()
+    if len(words) < 2:
+        return False
+    return words[0].lower() == document_number.lower() and words[1].lower() == document_number.lower()
+
+
+def has_artificial_y_label(chunk: dict[str, Any]) -> bool:
+    if normalize(chunk.get("node_label")) == "Ý":
+        return True
+    return any(normalize(part) == "Ý" for part in chunk.get("legal_path") or [])
+
+
 def build_documents(vld_root: Path, ids: set[int]) -> list[dict[str, Any]]:
     metadata = load_metadata(vld_root, ids)
     contents = load_contents(vld_root, ids)
@@ -502,6 +851,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--document-id", action="append", default=[], help="Document id(s), repeat or comma-separate.")
     parser.add_argument("--ids-file", type=Path, help="Optional UTF-8 file containing document ids.")
     parser.add_argument("--max-text-tokens", type=int, default=2048)
+    parser.add_argument("--overlap-tokens", type=int, default=256)
     parser.add_argument("--table-rows-per-chunk", type=int, default=8)
     return parser
 
@@ -525,7 +875,12 @@ def main() -> None:
     all_chunks: list[dict[str, Any]] = []
     per_doc = []
     for document in documents:
-        chunks = build_chunks_for_tree(document, args.max_text_tokens, args.table_rows_per_chunk)
+        chunks = build_chunks_for_tree(
+            document,
+            args.max_text_tokens,
+            args.table_rows_per_chunk,
+            overlap_tokens=args.overlap_tokens,
+        )
         all_chunks.extend(chunks)
         type_counts = Counter(chunk["chunk_type"] for chunk in chunks)
         per_doc.append(
@@ -541,25 +896,47 @@ def main() -> None:
 
     chunks_json = args.output_dir / "chunks.json"
     chunks_jsonl = args.output_dir / "chunks.jsonl"
+    chunk_text_preview_json = args.output_dir / "chunk_text_preview.json"
+    chunk_text_preview_jsonl = args.output_dir / "chunk_text_preview.jsonl"
     preview_jsonl = args.output_dir / "qdrant_payload_preview.jsonl"
     summary_json = args.output_dir / "summary.json"
     chunks_json.write_text(json.dumps(all_chunks, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     with chunks_jsonl.open("w", encoding="utf-8", newline="\n") as handle:
         for chunk in all_chunks:
             handle.write(json.dumps(chunk, ensure_ascii=False) + "\n")
+    text_previews = [make_chunk_text_preview(chunk) for chunk in all_chunks]
+    chunk_text_preview_json.write_text(json.dumps(text_previews, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    with chunk_text_preview_jsonl.open("w", encoding="utf-8", newline="\n") as handle:
+        for preview in text_previews:
+            handle.write(json.dumps(preview, ensure_ascii=False) + "\n")
     with preview_jsonl.open("w", encoding="utf-8", newline="\n") as handle:
         for chunk in all_chunks:
             handle.write(json.dumps(make_qdrant_preview(chunk), ensure_ascii=False) + "\n")
 
+    over_token_chunks = [chunk["chunk_id"] for chunk in all_chunks if chunk["token_estimate"] > args.max_text_tokens]
+    chunks_with_artificial_y = [chunk["chunk_id"] for chunk in all_chunks if has_artificial_y_label(chunk)]
+    duplicated_lawcode_chunks = [chunk["chunk_id"] for chunk in all_chunks if has_duplicated_document_number(chunk)]
     summary = {
         "requested_ids": sorted(ids),
         "built_documents": len(documents),
         "chunk_count": len(all_chunks),
         "chunk_type_counts": dict(Counter(chunk["chunk_type"] for chunk in all_chunks)),
         "table_chunk_count": sum(1 for chunk in all_chunks if chunk["contains_table"]),
+        "tokenizer": "tiktoken/cl100k_base",
+        "max_text_tokens": args.max_text_tokens,
+        "overlap_tokens": args.overlap_tokens,
+        "max_token_estimate": max((chunk["token_estimate"] for chunk in all_chunks), default=0),
+        "over_token_chunk_count": len(over_token_chunks),
+        "over_token_chunk_ids": over_token_chunks[:50],
+        "chunks_with_artificial_y_count": len(chunks_with_artificial_y),
+        "chunks_with_artificial_y_ids": chunks_with_artificial_y[:50],
+        "duplicated_lawcode_chunk_count": len(duplicated_lawcode_chunks),
+        "duplicated_lawcode_chunk_ids": duplicated_lawcode_chunks[:50],
         "outputs": {
             "chunks_json": str(chunks_json),
             "chunks_jsonl": str(chunks_jsonl),
+            "chunk_text_preview_json": str(chunk_text_preview_json),
+            "chunk_text_preview_jsonl": str(chunk_text_preview_jsonl),
             "qdrant_payload_preview": str(preview_jsonl),
             "summary_json": str(summary_json),
         },
