@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from itertools import islice
 from pathlib import Path
@@ -45,6 +46,18 @@ def ingest_phapdien_to_qdrant(config: QdrantIngestConfig) -> dict[str, Any]:
     if config.recreate_collection and checkpoint_path.exists():
         checkpoint_path.unlink()
     completed_ids = read_ingest_checkpoint(checkpoint_path)
+    if not config.recreate_collection and should_rebuild_checkpoint_from_qdrant(checkpoint_path):
+        rebuilt = rebuild_ingest_checkpoint_from_qdrant(
+            client=client,
+            collection_name=config.collection_name,
+            preview_path=_qdrant_preview_path(config.build_dir),
+            checkpoint_path=checkpoint_path,
+            completed_ids=completed_ids,
+            batch_size=max(config.batch_size, 256),
+            limit=config.limit,
+        )
+        if rebuilt:
+            print(f"Rebuilt Qdrant ingest checkpoint from remote collection: {rebuilt} existing point ids", flush=True)
     if completed_ids:
         print(f"Resuming Qdrant ingest: {len(completed_ids)} point ids already checkpointed", flush=True)
 
@@ -127,6 +140,109 @@ def append_ingest_checkpoint(path: Path, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             handle.write(json.dumps({"id": row["id"]}, ensure_ascii=False) + "\n")
         handle.flush()
+
+
+def should_rebuild_checkpoint_from_qdrant(checkpoint_path: Path) -> bool:
+    value = os.getenv("R2AI_REBUILD_INGEST_CHECKPOINT_FROM_QDRANT")
+    if value is None:
+        return not checkpoint_path.exists()
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def rebuild_ingest_checkpoint_from_qdrant(
+    *,
+    client: Any,
+    collection_name: str,
+    preview_path: Path,
+    checkpoint_path: Path,
+    completed_ids: set[str],
+    batch_size: int,
+    limit: int | None,
+) -> int:
+    rebuilt = 0
+    checked = 0
+    print("Checking Qdrant for existing point ids to rebuild ingest checkpoint...", flush=True)
+    for rows in batched(read_qdrant_preview_rows(preview_path, limit=limit), batch_size):
+        candidate_ids = [row["id"] for row in rows if str(row["id"]) not in completed_ids]
+        if not candidate_ids:
+            continue
+        points = retry_request(
+            lambda: client.retrieve(
+                collection_name=collection_name,
+                ids=candidate_ids,
+                with_payload=True,
+                with_vectors=False,
+            ),
+            label=f"Qdrant retrieve existing ids {checked}-{checked + len(candidate_ids)}",
+        )
+        rows_by_id = {str(row["id"]): row for row in rows}
+        existing_rows = []
+        for point in points:
+            point_id = _point_id(point)
+            if (
+                point_id is not None
+                and point_id not in completed_ids
+                and remote_point_matches_preview(rows_by_id.get(point_id), point)
+            ):
+                existing_rows.append({"id": point_id})
+        if existing_rows:
+            append_ingest_checkpoint(checkpoint_path, existing_rows)
+            completed_ids.update(row["id"] for row in existing_rows)
+            rebuilt += len(existing_rows)
+        checked += len(candidate_ids)
+        if checked % 10000 == 0:
+            print(f"Checked {checked} preview point ids against Qdrant; found {rebuilt} existing", flush=True)
+    return rebuilt
+
+
+def _point_id(point: Any) -> str | None:
+    if isinstance(point, dict):
+        value = point.get("id")
+    else:
+        value = getattr(point, "id", None)
+    return str(value) if value is not None else None
+
+
+def remote_point_matches_preview(preview_row: dict[str, Any] | None, point: Any) -> bool:
+    if preview_row is None:
+        return False
+    expected_payload = preview_row.get("payload") or {}
+    remote_payload = _point_payload(point)
+    if not expected_payload:
+        return True
+    fields = (
+        "dataset",
+        "document_id",
+        "chunk_id",
+        "chunk_index",
+        "chunk_count",
+        "canonical_article_id",
+        "retrieval_text_sha1",
+    )
+    checked = False
+    for field in fields:
+        if field not in expected_payload:
+            continue
+        checked = True
+        if not metadata_values_match(expected_payload.get(field), remote_payload.get(field)):
+            return False
+    return checked
+
+
+def _point_payload(point: Any) -> dict[str, Any]:
+    if isinstance(point, dict):
+        payload = point.get("payload")
+    else:
+        payload = getattr(point, "payload", None)
+    return payload if isinstance(payload, dict) else {}
+
+
+def metadata_values_match(expected: Any, actual: Any) -> bool:
+    if expected is None:
+        return actual is None
+    if isinstance(expected, (list, dict)):
+        return expected == actual
+    return str(expected) == str(actual)
 
 
 def make_points(

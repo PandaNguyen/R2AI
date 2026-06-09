@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-KAGGLE_TEMP="${KAGGLE_TEMP:-/kaggle/temp}"
+KAGGLE_TEMP="${KAGGLE_TEMP:-/kaggle/working}"
 DATA_DIR="${R2AI_VLD_DIR:-$KAGGLE_TEMP/r2ai-data/vietnamese-legal-documents}"
 BUILD_DIR="${R2AI_VLD_BUILD_DIR:-$KAGGLE_TEMP/r2ai-build/vld_business_scope}"
 MODEL_CACHE_DIR="${R2AI_MODEL_CACHE_DIR:-$KAGGLE_TEMP/r2ai-cache/models}"
