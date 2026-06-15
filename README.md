@@ -76,6 +76,23 @@ Useful knobs:
 - `R2AI_RECREATE_COLLECTION=1` to delete and recreate the collection.
 - `R2AI_MODEL_CACHE_DIR=/kaggle/working/models` to control model cache path.
 
+## Qdrant Search With Reranking
+
+Install search dependencies:
+
+```powershell
+uv sync --extra search
+```
+
+Then enable the Vietnamese cross-encoder reranker after Qdrant retrieval:
+
+```powershell
+.\.venv\Scripts\python.exe main.py search-qdrant "Trí tuệ nhân tạo là gì?" --mode hybrid --top-k 5 --prefetch-limit 20 --rerank
+```
+
+The default reranker is `AITeamVN/Vietnamese_Reranker` with max sequence length
+`2304`. Use `--reranker-model` or `--reranker-max-length` to override it.
+
 ## Package Layout
 
 - `r2ai/data_ingest/phapdien/`: phapdien loaders, citation parsing, chunking,

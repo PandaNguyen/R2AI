@@ -16,6 +16,8 @@ from r2ai.indexing.config import (
     DEFAULT_DENSE_MODEL,
     DEFAULT_DOC_TITLE_FORMAT,
     DEFAULT_PREFETCH_LIMIT,
+    DEFAULT_RERANKER_MAX_LENGTH,
+    DEFAULT_RERANKER_MODEL,
     DEFAULT_SEARCH_QDRANT_TIMEOUT,
     DEFAULT_SEARCH_MODE,
     DEFAULT_SPARSE_MODEL,
@@ -94,6 +96,9 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--model-cache-dir", type=Path, default=None)
     search.add_argument("--query-embedding", type=Path, default=None, help="Optional .npy vector for this query")
     search.add_argument("--query-instruction", default="", help="Optional prefix for on-the-fly dense embedding")
+    search.add_argument("--rerank", action="store_true", help="Rerank retrieved candidates with a cross-encoder")
+    search.add_argument("--reranker-model", default=DEFAULT_RERANKER_MODEL)
+    search.add_argument("--reranker-max-length", type=int, default=DEFAULT_RERANKER_MAX_LENGTH)
     search.add_argument("--topic-title", default=None)
     search.add_argument("--subject-title", default=None)
     search.add_argument("--source-law-id", default=None)
@@ -125,6 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--model-cache-dir", type=Path, default=None)
     submit.add_argument("--query-embeddings", type=Path, default=None, help="Optional .npy matrix aligned to questions")
     submit.add_argument("--query-instruction", default="", help="Optional prefix for on-the-fly dense embedding")
+    submit.add_argument("--rerank", action="store_true", help="Rerank retrieved candidates with a cross-encoder")
+    submit.add_argument("--reranker-model", default=DEFAULT_RERANKER_MODEL)
+    submit.add_argument("--reranker-max-length", type=int, default=DEFAULT_RERANKER_MAX_LENGTH)
     submit.add_argument("--limit", type=int, default=None, help="Optional number of questions for smoke tests")
     submit.add_argument("--progress-every", type=int, default=25)
     submit.add_argument("--qdrant-batch-size", type=int, default=64, help="Batch size for dense .npy Qdrant queries")
@@ -218,6 +226,9 @@ def main() -> None:
                 model_cache_dir=args.model_cache_dir,
                 query_vector=query_vector,
                 query_instruction=args.query_instruction,
+                rerank=args.rerank,
+                reranker_model_name=args.reranker_model,
+                reranker_max_length=args.reranker_max_length,
                 topic_title=args.topic_title,
                 subject_title=args.subject_title,
                 source_law_id=args.source_law_id,
@@ -253,6 +264,9 @@ def main() -> None:
                 answer_article_limit=args.answer_article_limit,
                 model_cache_dir=args.model_cache_dir,
                 query_instruction=args.query_instruction,
+                rerank=args.rerank,
+                reranker_model_name=args.reranker_model,
+                reranker_max_length=args.reranker_max_length,
                 topic_title=args.topic_title,
                 subject_title=args.subject_title,
                 source_law_id=args.source_law_id,

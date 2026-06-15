@@ -1431,6 +1431,9 @@ wheels = [
 name = "r2ai"
 version = "0.1.0"
 source = { editable = "." }
+dependencies = [
+    { name = "numpy" },
+]
 
 [package.optional-dependencies]
 data = [
@@ -1457,6 +1460,7 @@ requires-dist = [
     { name = "fastembed", marker = "extra == 'ingest'", specifier = ">=0.7.0" },
     { name = "fastembed", marker = "extra == 'search'", specifier = ">=0.7.0" },
     { name = "huggingface-hub", marker = "extra == 'ingest'", specifier = ">=0.24.0" },
+    { name = "numpy", specifier = ">=2.4.6" },
     { name = "numpy", marker = "extra == 'search'", specifier = ">=1.26.0" },
     { name = "pyarrow", marker = "extra == 'data'", specifier = ">=15.0.0" },
     { name = "pyarrow", marker = "extra == 'ingest'", specifier = ">=15.0.0" },

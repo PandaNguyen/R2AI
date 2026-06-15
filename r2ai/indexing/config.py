@@ -20,6 +20,8 @@ DEFAULT_SEARCH_MODE = "hybrid"
 DEFAULT_SEARCH_QDRANT_TIMEOUT = 30.0
 DEFAULT_DOC_TITLE_FORMAT = "type1"
 DEFAULT_ANSWER_ARTICLE_LIMIT: int | None = None
+DEFAULT_RERANKER_MODEL = "AITeamVN/Vietnamese_Reranker"
+DEFAULT_RERANKER_MAX_LENGTH = 2304
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,9 @@ class QdrantSearchConfig:
     model_cache_dir: Path | None = None
     query_vector: list[float] | None = None
     query_instruction: str = DEFAULT_QUERY_INSTRUCTION
+    rerank: bool = False
+    reranker_model_name: str = DEFAULT_RERANKER_MODEL
+    reranker_max_length: int = DEFAULT_RERANKER_MAX_LENGTH
     topic_title: str | None = None
     subject_title: str | None = None
     source_law_id: str | None = None
@@ -123,6 +128,9 @@ class QdrantSearchConfig:
         model_cache_dir: Path | None = None,
         query_vector: list[float] | None = None,
         query_instruction: str = DEFAULT_QUERY_INSTRUCTION,
+        rerank: bool = False,
+        reranker_model_name: str = DEFAULT_RERANKER_MODEL,
+        reranker_max_length: int = DEFAULT_RERANKER_MAX_LENGTH,
         topic_title: str | None = None,
         subject_title: str | None = None,
         source_law_id: str | None = None,
@@ -152,6 +160,9 @@ class QdrantSearchConfig:
             model_cache_dir=model_cache_dir,
             query_vector=query_vector,
             query_instruction=query_instruction,
+            rerank=rerank,
+            reranker_model_name=reranker_model_name,
+            reranker_max_length=reranker_max_length,
             topic_title=topic_title,
             subject_title=subject_title,
             source_law_id=source_law_id,

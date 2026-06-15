@@ -20,3 +20,4 @@ output.json
 .code-review-graph
 *.zip
 results*.json
+results*.jsonl

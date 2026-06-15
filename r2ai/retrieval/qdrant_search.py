@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import contextlib
 import json
 import re
 import time
@@ -33,6 +34,7 @@ def search_qdrant(
     *,
     dense_model: Any | None = None,
     sparse_model: Any | None = None,
+    reranker: tuple[Any, Any] | None = None,
     client: Any | None = None,
     models: Any | None = None,
 ) -> dict[str, Any]:
@@ -51,6 +53,7 @@ def search_qdrant(
 
     query_filter = build_qdrant_filter(config, models)
     search_limit = max(config.top_k, config.prefetch_limit)
+    retrieval_limit = search_limit if config.rerank else config.top_k
     dense_vector = None
     sparse_vector = None
 
@@ -70,7 +73,7 @@ def search_qdrant(
                 query=dense_vector,
                 using=config.dense_vector_name,
                 query_filter=query_filter,
-                limit=config.top_k,
+                limit=retrieval_limit,
                 with_payload=True,
                 with_vectors=False,
             )
@@ -85,7 +88,7 @@ def search_qdrant(
                 query=sparse_vector,
                 using=config.sparse_vector_name,
                 query_filter=query_filter,
-                limit=config.top_k,
+                limit=retrieval_limit,
                 with_payload=True,
                 with_vectors=False,
             )
@@ -103,7 +106,7 @@ def search_qdrant(
                 ],
                 query=rrf_query(models),
                 query_filter=query_filter,
-                limit=config.top_k,
+                limit=retrieval_limit,
                 with_payload=True,
                 with_vectors=False,
             )
@@ -136,7 +139,9 @@ def search_qdrant(
                 with_vectors=False,
             )
         )
-        results = fuse_ranked_points(dense_hits=dense_hits, sparse_hits=sparse_hits, limit=config.top_k)
+        results = fuse_ranked_points(dense_hits=dense_hits, sparse_hits=sparse_hits, limit=retrieval_limit)
+
+    results = maybe_rerank_results(config, query_text, results, reranker=reranker)
 
     return {
         "collection_name": config.collection_name,
@@ -147,6 +152,9 @@ def search_qdrant(
         "doc_title_format": config.doc_title_format,
         "answer_article_limit": config.answer_article_limit,
         "used_precomputed_dense_vector": config.query_vector is not None,
+        "rerank": config.rerank,
+        "reranker_model": config.reranker_model_name if config.rerank else None,
+        "reranker_max_length": config.reranker_max_length if config.rerank else None,
         "filters": summarize_filters(config),
         "results": results,
     }
@@ -159,6 +167,7 @@ def search_qdrant_batch(
     query_vectors: list[list[float]] | None = None,
     dense_model: Any | None = None,
     sparse_model: Any | None = None,
+    reranker: tuple[Any, Any] | None = None,
     client: Any | None = None,
     models: Any | None = None,
     progress_every: int = 0,
@@ -195,6 +204,8 @@ def search_qdrant_batch(
         dense_model = _load_dense_model(config.dense_model_name, config.model_cache_dir)
     if mode in {"bm25", "hybrid"} and sparse_model is None:
         sparse_model = _load_sparse_model(config.sparse_model_name, config.model_cache_dir)
+    if config.rerank and reranker is None:
+        reranker = load_reranker(config.reranker_model_name, config.model_cache_dir)
     if (
         mode == "dense"
         and pending_vectors is not None
@@ -208,6 +219,7 @@ def search_qdrant_batch(
             query_vectors=pending_vectors,
             client=client,
             models=models,
+            reranker=reranker,
             progress_every=progress_every,
             query_batch_size=query_batch_size,
             checkpoint_path=checkpoint_path,
@@ -231,6 +243,7 @@ def search_qdrant_batch(
             sparse_vectors=sparse_vectors,
             client=client,
             models=models,
+            reranker=reranker,
             progress_every=progress_every,
             query_batch_size=query_batch_size,
             checkpoint_path=checkpoint_path,
@@ -252,6 +265,7 @@ def search_qdrant_batch(
                 ),
                 dense_model=dense_model,
                 sparse_model=sparse_model,
+                reranker=reranker,
                 client=client,
                 models=models,
             )
@@ -278,11 +292,14 @@ def search_qdrant_dense_batch(
     query_vectors: list[list[float]],
     client: Any,
     models: Any,
+    reranker: tuple[Any, Any] | None = None,
     progress_every: int = 0,
     query_batch_size: int = 64,
     checkpoint_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     query_filter = build_qdrant_filter(config, models)
+    search_limit = max(config.top_k, config.prefetch_limit)
+    retrieval_limit = search_limit if config.rerank else config.top_k
     rows = []
     started_at = time.monotonic()
     total = len(questions)
@@ -293,7 +310,7 @@ def search_qdrant_dense_batch(
                 query=[float(value) for value in vector],
                 using=config.dense_vector_name,
                 filter=query_filter,
-                limit=config.top_k,
+                limit=retrieval_limit,
                 with_payload=True,
                 with_vector=False,
             )
@@ -316,8 +333,16 @@ def search_qdrant_dense_batch(
                 "doc_title_format": config.doc_title_format,
                 "answer_article_limit": config.answer_article_limit,
                 "used_precomputed_dense_vector": True,
+                "rerank": config.rerank,
+                "reranker_model": config.reranker_model_name if config.rerank else None,
+                "reranker_max_length": config.reranker_max_length if config.rerank else None,
                 "filters": summarize_filters(config),
-                "results": ranked_points_to_results(_response_points(response), source="dense"),
+                "results": maybe_rerank_results(
+                    config,
+                    question["question"],
+                    ranked_points_to_results(_response_points(response), source="dense"),
+                    reranker=reranker,
+                ),
             }
             row = format_competition_row(question, result)
             append_submission_checkpoint(checkpoint_path, row)
@@ -337,6 +362,7 @@ def search_qdrant_sparse_or_hybrid_batch(
     sparse_vectors: list[Any],
     client: Any,
     models: Any,
+    reranker: tuple[Any, Any] | None = None,
     progress_every: int = 0,
     query_batch_size: int = 64,
     checkpoint_path: Path | None = None,
@@ -344,6 +370,7 @@ def search_qdrant_sparse_or_hybrid_batch(
     mode = normalize_search_mode(config.search_mode)
     query_filter = build_qdrant_filter(config, models)
     search_limit = max(config.top_k, config.prefetch_limit)
+    retrieval_limit = search_limit if config.rerank else config.top_k
     rows = []
     started_at = time.monotonic()
     total = len(questions)
@@ -357,7 +384,7 @@ def search_qdrant_sparse_or_hybrid_batch(
                         query=sparse_vectors[index],
                         using=config.sparse_vector_name,
                         filter=query_filter,
-                        limit=config.top_k,
+                        limit=retrieval_limit,
                         with_payload=True,
                         with_vector=False,
                     )
@@ -375,7 +402,7 @@ def search_qdrant_sparse_or_hybrid_batch(
                         ],
                         query=rrf_query(models),
                         filter=query_filter,
-                        limit=config.top_k,
+                        limit=retrieval_limit,
                         with_payload=True,
                         with_vector=False,
                     )
@@ -397,10 +424,18 @@ def search_qdrant_sparse_or_hybrid_batch(
                 "doc_title_format": config.doc_title_format,
                 "answer_article_limit": config.answer_article_limit,
                 "used_precomputed_dense_vector": query_vectors is not None,
+                "rerank": config.rerank,
+                "reranker_model": config.reranker_model_name if config.rerank else None,
+                "reranker_max_length": config.reranker_max_length if config.rerank else None,
                 "filters": summarize_filters(config),
-                "results": ranked_points_to_results(
-                    _response_points(response),
-                    source="sparse" if mode == "bm25" else "hybrid",
+                "results": maybe_rerank_results(
+                    config,
+                    question["question"],
+                    ranked_points_to_results(
+                        _response_points(response),
+                        source="sparse" if mode == "bm25" else "hybrid",
+                    ),
+                    reranker=reranker,
                 ),
             }
             row = format_competition_row(question, result)
@@ -513,6 +548,9 @@ def empty_search_result(config: QdrantSearchConfig, query_text: str, mode: str) 
         "doc_title_format": config.doc_title_format,
         "answer_article_limit": config.answer_article_limit,
         "used_precomputed_dense_vector": config.query_vector is not None,
+        "rerank": config.rerank,
+        "reranker_model": config.reranker_model_name if config.rerank else None,
+        "reranker_max_length": config.reranker_max_length if config.rerank else None,
         "filters": summarize_filters(config),
         "results": [],
     }
@@ -617,6 +655,120 @@ def fuse_ranked_points(dense_hits: list[Any], sparse_hits: list[Any], limit: int
         ),
     )
     return ranked[:limit]
+
+
+def maybe_rerank_results(
+    config: QdrantSearchConfig,
+    query_text: str,
+    results: list[dict[str, Any]],
+    *,
+    reranker: tuple[Any, Any] | None = None,
+) -> list[dict[str, Any]]:
+    if not config.rerank:
+        return results[: config.top_k]
+    if not results:
+        return []
+    if reranker is None:
+        reranker = load_reranker(config.reranker_model_name, config.model_cache_dir)
+    tokenizer, model = reranker
+    pairs = [[query_text, result_text_for_reranking(item)] for item in results]
+    scores = score_rerank_pairs(
+        tokenizer=tokenizer,
+        model=model,
+        pairs=pairs,
+        max_length=config.reranker_max_length,
+    )
+    reranked = []
+    for item, score in zip(results, scores, strict=True):
+        reranked_item = dict(item)
+        reranked_item["retrieval_rank"] = item.get("rank")
+        reranked_item["retrieval_score"] = item.get("score")
+        reranked_item["rerank_score"] = float(score)
+        reranked_item["score"] = float(score)
+        reranked.append(reranked_item)
+    reranked.sort(
+        key=lambda item: (
+            -item["rerank_score"],
+            item["retrieval_rank"] if item["retrieval_rank"] is not None else 10**9,
+            str(item["id"]),
+        )
+    )
+    for rank, item in enumerate(reranked, start=1):
+        item["rank"] = rank
+        item["rerank_rank"] = rank
+    return reranked[: config.top_k]
+
+
+def load_reranker(model_name: str, cache_dir: Path | None) -> tuple[Any, Any]:
+    try:
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    except ImportError as exc:
+        raise RuntimeError("transformers is required for reranking. Install the search extra.") from exc
+
+    kwargs: dict[str, Any] = {"cache_dir": str(cache_dir)} if cache_dir else {}
+    tokenizer = AutoTokenizer.from_pretrained(model_name, **kwargs)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name, **kwargs)
+    if hasattr(model, "eval"):
+        model.eval()
+    device = preferred_torch_device()
+    if device and hasattr(model, "to"):
+        model.to(device)
+    return tokenizer, model
+
+
+def score_rerank_pairs(tokenizer: Any, model: Any, pairs: list[list[str]], max_length: int) -> list[float]:
+    try:
+        import torch
+    except ImportError:
+        torch = None
+    no_grad = torch.no_grad() if torch is not None else contextlib.nullcontext()
+    with no_grad:
+        inputs = tokenizer(
+            pairs,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+            max_length=max_length,
+        )
+        device = model_device(model)
+        if device is not None:
+            inputs = {
+                key: value.to(device) if hasattr(value, "to") else value
+                for key, value in inputs.items()
+            }
+        outputs = model(**inputs, return_dict=True)
+    logits = outputs.get("logits") if isinstance(outputs, dict) else getattr(outputs, "logits")
+    try:
+        values = logits.view(-1).float().detach().cpu().tolist()
+    except AttributeError:
+        values = list(logits)
+    return [float(value) for value in values]
+
+
+def result_text_for_reranking(item: dict[str, Any]) -> str:
+    payload = item.get("payload") or {}
+    retrieval_text = str(payload.get("retrieval_text") or "").strip()
+    if retrieval_text:
+        return retrieval_text
+    fallback_parts = []
+    for key in ("article_title", "source_doc_title_candidates", "source_article_no_candidates"):
+        fallback_parts.extend(as_text_list(payload.get(key)))
+    return "\n".join(fallback_parts)
+
+
+def preferred_torch_device() -> str | None:
+    try:
+        import torch
+    except ImportError:
+        return None
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def model_device(model: Any) -> Any | None:
+    try:
+        return next(model.parameters()).device
+    except (AttributeError, StopIteration, TypeError):
+        return None
 
 
 def ranked_points_to_results(hits: list[Any], source: str) -> list[dict[str, Any]]:

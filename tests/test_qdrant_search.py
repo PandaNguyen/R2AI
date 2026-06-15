@@ -125,6 +125,24 @@ class FakeClient:
         )
 
 
+class FakeRerankerTokenizer:
+    def __call__(self, pairs, padding, truncation, return_tensors, max_length):  # noqa: ANN001
+        self.last_call = {
+            "pairs": pairs,
+            "padding": padding,
+            "truncation": truncation,
+            "return_tensors": return_tensors,
+            "max_length": max_length,
+        }
+        return {"pairs": pairs}
+
+
+class FakeRerankerModel:
+    def __call__(self, pairs, return_dict):  # noqa: ANN001
+        scores = [-1.0 if "Điều 1" in pair[1] else 5.0 for pair in pairs]
+        return {"logits": scores}
+
+
 class QdrantSearchTests(unittest.TestCase):
     def test_build_qdrant_filter_includes_keyword_and_range_conditions(self) -> None:
         config = QdrantSearchConfig(
@@ -212,6 +230,31 @@ class QdrantSearchTests(unittest.TestCase):
         self.assertTrue(result["used_precomputed_dense_vector"])
         self.assertEqual(client.calls[0]["query"], [0.1, 0.2])
         self.assertEqual(client.calls[0]["using"], "dense")
+
+    def test_search_qdrant_reranks_candidate_results(self) -> None:
+        config = QdrantSearchConfig(
+            collection_name="demo",
+            qdrant_url="https://example.com",
+            qdrant_api_key="secret",
+            query_text="quy định doanh nghiệp",
+            search_mode="dense",
+            query_vector=[0.1, 0.2],
+            top_k=1,
+            prefetch_limit=2,
+            rerank=True,
+        )
+        client = FakeClient()
+        tokenizer = FakeRerankerTokenizer()
+        model = FakeRerankerModel()
+
+        result = search_qdrant(config, client=client, models=FakeModels, reranker=(tokenizer, model))
+
+        self.assertEqual([item["id"] for item in result["results"]], ["chunk-2"])
+        self.assertEqual(client.calls[0]["limit"], 2)
+        self.assertEqual(tokenizer.last_call["max_length"], 2304)
+        self.assertEqual(result["results"][0]["rank"], 1)
+        self.assertEqual(result["results"][0]["retrieval_rank"], 2)
+        self.assertEqual(result["results"][0]["rerank_score"], 5.0)
 
     def test_format_competition_row_matches_challenge_schema(self) -> None:
         result = {
