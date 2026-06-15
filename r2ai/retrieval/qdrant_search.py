@@ -704,9 +704,16 @@ def load_reranker(model_name: str, cache_dir: Path | None) -> tuple[Any, Any]:
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
     except ImportError as exc:
         raise RuntimeError("transformers is required for reranking. Install the search extra.") from exc
+    try:
+        import sentencepiece  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "sentencepiece is required for the Vietnamese reranker tokenizer. "
+            "Run `uv sync --extra search` or install `sentencepiece` in the current environment."
+        ) from exc
 
     kwargs: dict[str, Any] = {"cache_dir": str(cache_dir)} if cache_dir else {}
-    tokenizer = AutoTokenizer.from_pretrained(model_name, **kwargs)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False, **kwargs)
     model = AutoModelForSequenceClassification.from_pretrained(model_name, **kwargs)
     if hasattr(model, "eval"):
         model.eval()

@@ -1453,6 +1453,8 @@ search = [
     { name = "numpy" },
     { name = "qdrant-client" },
     { name = "sentence-transformers" },
+    { name = "torch" },
+    { name = "transformers" },
 ]
 
 [package.metadata]
@@ -1470,6 +1472,8 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'search'", specifier = ">=3.0.0" },
     { name = "tiktoken", marker = "extra == 'data'", specifier = ">=0.8.0" },
     { name = "tiktoken", marker = "extra == 'ingest'", specifier = ">=0.8.0" },
+    { name = "torch", marker = "extra == 'search'", specifier = ">=2.2.0" },
+    { name = "transformers", marker = "extra == 'search'", specifier = ">=4.41.0" },
 ]
 provides-extras = ["data", "ingest", "search"]
 

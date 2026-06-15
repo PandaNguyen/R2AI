@@ -93,6 +93,75 @@ Then enable the Vietnamese cross-encoder reranker after Qdrant retrieval:
 The default reranker is `AITeamVN/Vietnamese_Reranker` with max sequence length
 `2304`. Use `--reranker-model` or `--reranker-max-length` to override it.
 
+### Kaggle Rerank Run
+
+On Kaggle, add these secrets first: `QDRANT_URL`, `QDRANT_API_KEY`, and
+optionally `HF_TOKEN` for higher Hugging Face rate limits.
+
+Clone and install with Kaggle's Python environment so it can reuse the existing
+CUDA PyTorch installation:
+
+```bash
+git clone https://github.com/PandaNguyen/R2AI.git
+cd R2AI
+pip install -q -e ".[search]"
+```
+
+Create `.env` from Kaggle secrets:
+
+```python
+from kaggle_secrets import UserSecretsClient
+
+secrets = UserSecretsClient()
+env_rows = [
+    ("QDRANT_URL", secrets.get_secret("QDRANT_URL")),
+    ("QDRANT_API_KEY", secrets.get_secret("QDRANT_API_KEY")),
+    ("QDRANT_COLLECTION", "r2ai_phapdien_baseline_v1"),
+]
+try:
+    env_rows.append(("HF_TOKEN", secrets.get_secret("HF_TOKEN")))
+except Exception:
+    pass
+
+with open(".env", "w", encoding="utf-8", newline="\n") as handle:
+    for key, value in env_rows:
+        handle.write(f"{key}={value}\n")
+```
+
+Smoke test one question:
+
+```bash
+python main.py search-qdrant "Doanh nghiệp nhỏ và vừa được hưởng ưu đãi gì khi tham gia đấu thầu?" \
+  --mode hybrid \
+  --top-k 5 \
+  --prefetch-limit 20 \
+  --doc-title-format type1 \
+  --model-cache-dir /kaggle/working/models \
+  --rerank \
+  --reranker-max-length 2304
+```
+
+Run the full file:
+
+```bash
+python main.py submit-qdrant \
+  --questions data/R2AIStage1DATA.json \
+  --output /kaggle/working/results_rerank.json \
+  --mode hybrid \
+  --top-k 20 \
+  --prefetch-limit 100 \
+  --doc-title-format type1 \
+  --model-cache-dir /kaggle/working/models \
+  --rerank \
+  --reranker-model AITeamVN/Vietnamese_Reranker \
+  --reranker-max-length 2304 \
+  --qdrant-timeout 120 \
+  --progress-every 10
+```
+
+For faster reranking or lower GPU memory use, reduce `--prefetch-limit` to `50`
+or `30`; rerank cost grows with the number of retrieved candidates per question.
+
 ## Package Layout
 
 - `r2ai/data_ingest/phapdien/`: phapdien loaders, citation parsing, chunking,
