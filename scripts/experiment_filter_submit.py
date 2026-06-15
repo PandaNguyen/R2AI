@@ -117,7 +117,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--query-embeddings", type=Path, default=Path("data/question_embeddings.npy"))
     parser.add_argument("--output", type=Path, default=Path("results_experiment_filters.json"))
     parser.add_argument("--zip-output", type=Path, default=None)
-    parser.add_argument("--collection", default=DEFAULT_COLLECTION)
+    parser.add_argument(
+        "--collection",
+        default=None,
+        help=f"Qdrant collection name; defaults to QDRANT_COLLECTION or {DEFAULT_COLLECTION}",
+    )
     parser.add_argument("--doc-title-format", choices=["type1", "type2"], default=DEFAULT_DOC_TITLE_FORMAT)
     parser.add_argument("--top-k", type=int, default=5, help="Final number of submitted references per question")
     parser.add_argument("--global-top-k", type=int, default=8, help="Global branch retrieval depth")

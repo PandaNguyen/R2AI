@@ -71,7 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     ingest = subparsers.add_parser("ingest-qdrant", help="Build phapdien data and ingest into Qdrant Cloud")
     ingest.add_argument("--source-dir", type=Path, default=Path("data/phapdien-moj-gov-vn"))
     ingest.add_argument("--build-dir", type=Path, default=Path("build"))
-    ingest.add_argument("--collection", default=DEFAULT_COLLECTION)
+    ingest.add_argument(
+        "--collection",
+        default=None,
+        help=f"Qdrant collection name; defaults to QDRANT_COLLECTION or {DEFAULT_COLLECTION}",
+    )
     ingest.add_argument("--dense-model", default=DEFAULT_DENSE_MODEL)
     ingest.add_argument("--sparse-model", default=DEFAULT_SPARSE_MODEL)
     ingest.add_argument("--batch-size", type=int, default=16)
@@ -84,7 +88,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     search = subparsers.add_parser("search-qdrant", help="Search the Qdrant Cloud collection with hybrid retrieval")
     search.add_argument("query", help="Vietnamese legal question or keyword query")
-    search.add_argument("--collection", default=DEFAULT_COLLECTION)
+    search.add_argument(
+        "--collection",
+        default=None,
+        help=f"Qdrant collection name; defaults to QDRANT_COLLECTION or {DEFAULT_COLLECTION}",
+    )
     search.add_argument("--mode", choices=["bm25", "dense", "hybrid"], default=DEFAULT_SEARCH_MODE)
     search.add_argument("--dense-model", default=DEFAULT_DENSE_MODEL)
     search.add_argument("--sparse-model", default=DEFAULT_SPARSE_MODEL)
@@ -118,7 +126,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSONL checkpoint for completed question predictions; defaults to <output>.checkpoint.jsonl",
     )
     submit.add_argument("--no-resume", action="store_true", help="Ignore any existing submission checkpoint")
-    submit.add_argument("--collection", default=DEFAULT_COLLECTION)
+    submit.add_argument(
+        "--collection",
+        default=None,
+        help=f"Qdrant collection name; defaults to QDRANT_COLLECTION or {DEFAULT_COLLECTION}",
+    )
     submit.add_argument("--mode", choices=["bm25", "dense", "hybrid"], default=DEFAULT_SEARCH_MODE)
     submit.add_argument("--dense-model", default=DEFAULT_DENSE_MODEL)
     submit.add_argument("--sparse-model", default=DEFAULT_SPARSE_MODEL)
