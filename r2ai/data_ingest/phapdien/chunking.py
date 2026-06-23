@@ -52,9 +52,9 @@ def split_structured_text(
         return [StructuredChunk(text=text, path=[], method="article")]
 
     root = parse_content_tree(text)
-    leaves = _leaf_chunks(root, max_tokens=max_tokens, overlap_tokens=overlap_tokens)
-    if leaves:
-        return leaves
+    chunks = _packed_tree_chunks(root, max_tokens=max_tokens, overlap_tokens=overlap_tokens)
+    if chunks:
+        return chunks
     return _split_leaf_with_context([], text, path=[], max_tokens=max_tokens, overlap_tokens=overlap_tokens)
 
 
@@ -117,47 +117,125 @@ def _marker_level(label: str, stack: list[TextNode]) -> tuple[int, str]:
     return numeric_parent_level + 1, "bullet"
 
 
-def _leaf_chunks(
+def _packed_tree_chunks(
     root: TextNode,
     max_tokens: int,
     overlap_tokens: int,
 ) -> list[StructuredChunk]:
-    chunks: list[StructuredChunk] = []
-
-    def visit(node: TextNode, ancestors: list[TextNode]) -> None:
-        if node.children:
-            for child in node.children:
-                visit(child, ancestors + ([node] if node.text else []))
-            return
-
-        context_lines = [ancestor.text for ancestor in ancestors if ancestor.text]
-        path = [ancestor.label for ancestor in ancestors if ancestor.label]
-        if node.label:
-            path.append(node.label)
-        chunks.extend(
-            _split_leaf_with_context(
-                context_lines=context_lines,
-                leaf_text=node.text,
-                path=path,
-                max_tokens=max_tokens,
-                overlap_tokens=overlap_tokens,
-            )
-        )
-
     if root.children:
-        for child in root.children:
-            visit(child, [])
-    elif root.text:
-        chunks.extend(
-            _split_leaf_with_context(
-                context_lines=[],
-                leaf_text=root.text,
-                path=[],
-                max_tokens=max_tokens,
-                overlap_tokens=overlap_tokens,
+        return _pack_child_subtrees(root.children, ancestors=[], max_tokens=max_tokens, overlap_tokens=overlap_tokens)
+    if root.text:
+        return _split_leaf_with_context(
+            context_lines=[],
+            leaf_text=root.text,
+            path=[],
+            max_tokens=max_tokens,
+            overlap_tokens=overlap_tokens,
+        )
+    return []
+
+
+def _chunks_for_node(
+    node: TextNode,
+    ancestors: list[TextNode],
+    max_tokens: int,
+    overlap_tokens: int,
+) -> list[StructuredChunk]:
+    context_lines = _context_lines(ancestors)
+    path = _node_path(ancestors, node)
+    subtree_text = _subtree_text(node)
+    full_text = _join_context(context_lines, subtree_text)
+    if count_tokens(full_text) <= max_tokens:
+        method = "tree_subtree" if node.children else "tree_leaf"
+        return [StructuredChunk(text=full_text, path=path, method=method)]
+
+    if node.children:
+        child_ancestors = ancestors + ([node] if node.text else [])
+        return _pack_child_subtrees(
+            node.children,
+            ancestors=child_ancestors,
+            max_tokens=max_tokens,
+            overlap_tokens=overlap_tokens,
+        )
+
+    return _split_leaf_with_context(
+        context_lines=context_lines,
+        leaf_text=node.text,
+        path=path,
+        max_tokens=max_tokens,
+        overlap_tokens=overlap_tokens,
+    )
+
+
+def _pack_child_subtrees(
+    nodes: list[TextNode],
+    ancestors: list[TextNode],
+    max_tokens: int,
+    overlap_tokens: int,
+) -> list[StructuredChunk]:
+    chunks: list[StructuredChunk] = []
+    current_nodes: list[TextNode] = []
+    current_texts: list[str] = []
+    context_lines = _context_lines(ancestors)
+
+    def flush() -> None:
+        nonlocal current_nodes, current_texts
+        if not current_nodes:
+            return
+        body = "\n".join(current_texts).strip()
+        chunks.append(
+            StructuredChunk(
+                text=_join_context(context_lines, body),
+                path=_packed_path(ancestors, current_nodes),
+                method="tree_packed" if len(current_nodes) > 1 else "tree_subtree",
             )
         )
+        current_nodes = []
+        current_texts = []
+
+    for node in nodes:
+        node_text = _subtree_text(node)
+        node_with_context = _join_context(context_lines, node_text)
+        if count_tokens(node_with_context) > max_tokens:
+            flush()
+            chunks.extend(_chunks_for_node(node, ancestors, max_tokens=max_tokens, overlap_tokens=overlap_tokens))
+            continue
+
+        candidate_body = "\n".join([*current_texts, node_text]).strip()
+        candidate = _join_context(context_lines, candidate_body)
+        if current_nodes and count_tokens(candidate) > max_tokens:
+            flush()
+
+        current_nodes.append(node)
+        current_texts.append(node_text)
+    flush()
     return chunks
+
+
+def _subtree_text(node: TextNode) -> str:
+    parts = [node.text] if node.text else []
+    for child in node.children:
+        child_text = _subtree_text(child)
+        if child_text:
+            parts.append(child_text)
+    return "\n".join(parts).strip()
+
+
+def _context_lines(ancestors: list[TextNode]) -> list[str]:
+    return [ancestor.text for ancestor in ancestors if ancestor.text]
+
+
+def _node_path(ancestors: list[TextNode], node: TextNode) -> list[str]:
+    path = [ancestor.label for ancestor in ancestors if ancestor.label]
+    if node.label:
+        path.append(node.label)
+    return path
+
+
+def _packed_path(ancestors: list[TextNode], nodes: list[TextNode]) -> list[str]:
+    path = [ancestor.label for ancestor in ancestors if ancestor.label]
+    path.extend(node.label for node in nodes if node.label)
+    return path
 
 
 def _split_leaf_with_context(

@@ -22,7 +22,7 @@ DEFAULT_DOC_TITLE_FORMAT = "type1"
 DEFAULT_ANSWER_ARTICLE_LIMIT: int | None = None
 DEFAULT_RERANKER_MODEL = "AITeamVN/Vietnamese_Reranker"
 DEFAULT_RERANKER_MAX_LENGTH = 2304
-
+DEFAULT_MODEL_CACHE_DIR = Path.cwd() / ".cache" 
 
 @dataclass(frozen=True)
 class QdrantIngestConfig:
@@ -36,7 +36,7 @@ class QdrantIngestConfig:
     dense_vector_name: str = DEFAULT_DENSE_VECTOR_NAME
     sparse_vector_name: str = DEFAULT_SPARSE_VECTOR_NAME
     batch_size: int = 16
-    model_cache_dir: Path | None = None
+    model_cache_dir: Path | None = DEFAULT_MODEL_CACHE_DIR
     recreate_collection: bool = False
     skip_build: bool = False
     limit: int | None = None
@@ -52,7 +52,7 @@ class QdrantIngestConfig:
         dense_model_name: str = DEFAULT_DENSE_MODEL,
         sparse_model_name: str = DEFAULT_SPARSE_MODEL,
         batch_size: int = 16,
-        model_cache_dir: Path | None = None,
+        model_cache_dir: Path | None = DEFAULT_MODEL_CACHE_DIR,
         recreate_collection: bool = False,
         skip_build: bool = False,
         limit: int | None = None,
@@ -99,7 +99,7 @@ class QdrantSearchConfig:
     qdrant_timeout: float = DEFAULT_SEARCH_QDRANT_TIMEOUT
     doc_title_format: str = DEFAULT_DOC_TITLE_FORMAT
     answer_article_limit: int | None = DEFAULT_ANSWER_ARTICLE_LIMIT
-    model_cache_dir: Path | None = None
+    model_cache_dir: Path | None = DEFAULT_MODEL_CACHE_DIR
     query_vector: list[float] | None = None
     query_instruction: str = DEFAULT_QUERY_INSTRUCTION
     rerank: bool = False
@@ -125,7 +125,7 @@ class QdrantSearchConfig:
         qdrant_timeout: float = DEFAULT_SEARCH_QDRANT_TIMEOUT,
         doc_title_format: str = DEFAULT_DOC_TITLE_FORMAT,
         answer_article_limit: int | None = DEFAULT_ANSWER_ARTICLE_LIMIT,
-        model_cache_dir: Path | None = None,
+        model_cache_dir: Path | None = DEFAULT_MODEL_CACHE_DIR,
         query_vector: list[float] | None = None,
         query_instruction: str = DEFAULT_QUERY_INSTRUCTION,
         rerank: bool = False,

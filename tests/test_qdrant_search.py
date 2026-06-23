@@ -315,6 +315,56 @@ class QdrantSearchTests(unittest.TestCase):
             ["04/2017/QH14|Luật 04/2017/QH14 Hỗ trợ doanh nghiệp nhỏ và vừa"],
         )
 
+    def test_doc_title_format_type1_handles_header_without_so(self) -> None:
+        result = {
+            "search_mode": "dense",
+            "doc_title_format": "type1",
+            "results": [
+                {
+                    "id": "point-1",
+                    "score": 0.9,
+                    "payload": {
+                        "retrieval_text": "Nghị định 12/2022/NĐ-CP quy định xử phạt vi phạm hành chính về lao động Điều 6:\nNội dung",
+                        "source_law_id_candidates": ["12/2022/NĐ-CP"],
+                    },
+                }
+            ],
+        }
+
+        row = format_competition_row({"id": 1, "question": "Thử việc sai bị phạt thế nào?"}, result)
+
+        self.assertEqual(
+            row["relevant_docs"],
+            ["12/2022/NĐ-CP|Nghị định Quy định xử phạt vi phạm hành chính về lao động"],
+        )
+
+    def test_format_competition_row_prefers_explicit_type1_metadata(self) -> None:
+        result = {
+            "search_mode": "dense",
+            "doc_title_format": "type1",
+            "results": [
+                {
+                    "id": "point-1",
+                    "score": 0.9,
+                    "payload": {
+                        "retrieval_text": "Header không chuẩn:\nNội dung",
+                        "source_law_id_candidates": ["WRONG"],
+                        "competition_law_id": "04/2017/QH14",
+                        "competition_doc_title_type1": "Luật Hỗ trợ doanh nghiệp nhỏ và vừa",
+                        "competition_article_no": "Điều 12",
+                    },
+                }
+            ],
+        }
+
+        row = format_competition_row({"id": 1, "question": "SME được hỗ trợ gì?"}, result)
+
+        self.assertEqual(row["relevant_docs"], ["04/2017/QH14|Luật Hỗ trợ doanh nghiệp nhỏ và vừa"])
+        self.assertEqual(
+            row["relevant_articles"],
+            ["04/2017/QH14|Luật Hỗ trợ doanh nghiệp nhỏ và vừa|Điều 12"],
+        )
+
     def test_answer_article_limit_only_limits_answer_patterns(self) -> None:
         result = {
             "search_mode": "dense",

@@ -91,6 +91,42 @@ class ChunkingTests(unittest.TestCase):
         self.assertTrue(all("3. Đôn đốc nhân dân." in chunk.text for chunk in chunks))
         self.assertTrue(all("3.1. Thực hiện đăng ký tạm trú:" in chunk.text for chunk in chunks))
 
+    def test_structured_chunks_pack_adjacent_siblings_until_budget(self) -> None:
+        chunks = split_structured_text(
+            "1. Doanh nghiệp lập hồ sơ. "
+            "2. Doanh nghiệp nộp báo cáo. "
+            "3. Doanh nghiệp lưu chứng từ.",
+            max_tokens=35,
+            overlap_tokens=0,
+        )
+
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(chunks[0].method, "tree_packed")
+        self.assertEqual(chunks[0].path, ["1", "2"])
+        self.assertIn("1. Doanh nghiệp lập hồ sơ.", chunks[0].text)
+        self.assertIn("2. Doanh nghiệp nộp báo cáo.", chunks[0].text)
+        self.assertEqual(chunks[1].path, ["3"])
+
+    def test_structured_chunks_pack_children_under_parent_context_until_budget(self) -> None:
+        chunks = split_structured_text(
+            "1. Nghĩa vụ của doanh nghiệp. "
+            "1.1. Lập hồ sơ. "
+            "1.2. Nộp báo cáo. "
+            "1.3. Lưu chứng từ.",
+            max_tokens=45,
+            overlap_tokens=0,
+        )
+
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(chunks[0].method, "tree_packed")
+        self.assertEqual(chunks[0].path, ["1", "1.1", "1.2"])
+        self.assertIn("1. Nghĩa vụ của doanh nghiệp.", chunks[0].text)
+        self.assertIn("1.1. Lập hồ sơ.", chunks[0].text)
+        self.assertIn("1.2. Nộp báo cáo.", chunks[0].text)
+        self.assertNotIn("1.3. Lưu chứng từ.", chunks[0].text)
+        self.assertIn("1. Nghĩa vụ của doanh nghiệp.", chunks[1].text)
+        self.assertIn("1.3. Lưu chứng từ.", chunks[1].text)
+
     def test_hyphen_inside_phrase_is_not_a_structural_bullet(self) -> None:
         chunks = split_structured_text(
             "1.3. Tổ chức chính trị - xã hội, tổ chức xã hội nghề nghiệp.",
@@ -197,6 +233,55 @@ class RetrievalTextTests(unittest.TestCase):
             text,
             "Luật số 32/2004/QH11 An ninh Quốc gia Điều 2 Đối tượng áp dụng:\n"
             "Nội dung điều 2.",
+        )
+
+    def test_retrieval_units_build_challenge_type1_metadata(self) -> None:
+        article = canonicalize_article(
+            {
+                "article_anchor": "#sme-12",
+                "article_title": "Điều 12. Hỗ trợ công nghệ",
+                "topic_title": "Doanh nghiệp, hợp tác xã",
+                "subject_title": "Hỗ trợ doanh nghiệp nhỏ và vừa",
+                "source_note_text": "(Điều 12 Luật số 04/2017/QH14 hỗ trợ doanh nghiệp nhỏ và vừa)",
+                "content_text": "Doanh nghiệp nhỏ và vừa được hỗ trợ công nghệ theo quy định.",
+            }
+        )
+
+        unit = make_retrieval_units(article)[0]
+
+        self.assertEqual(unit["competition_law_id"], "04/2017/QH14")
+        self.assertEqual(unit["competition_doc_title_type1"], "Luật Hỗ trợ doanh nghiệp nhỏ và vừa")
+        self.assertEqual(unit["competition_doc_title_type2"], "Luật 04/2017/QH14 Hỗ trợ doanh nghiệp nhỏ và vừa")
+        self.assertEqual(unit["competition_article_no"], "Điều 12")
+        self.assertEqual(unit["document_number"], "04/2017/QH14")
+        self.assertEqual(unit["document_title"], "Luật Hỗ trợ doanh nghiệp nhỏ và vừa")
+        self.assertEqual(unit["source_document_title"], "Luật số 04/2017/QH14 hỗ trợ doanh nghiệp nhỏ và vừa")
+        self.assertEqual(unit["source_article_no"], "Điều 12")
+        self.assertEqual(unit["phapdien_article_title"], "Điều 12. Hỗ trợ công nghệ")
+        self.assertNotEqual(unit["document_id"], unit["canonical_article_id"])
+        self.assertIn("retrieval_text_sha1", unit)
+        self.assertIn("token_estimate", unit)
+
+    def test_challenge_metadata_type1_handles_source_title_without_so(self) -> None:
+        article = canonicalize_article(
+            {
+                "article_anchor": "#labor-1",
+                "article_title": "Điều 6. Vi phạm quy định về thử việc",
+                "source_note_text": "(Điều 6 Nghị định 12/2022/NĐ-CP quy định xử phạt vi phạm hành chính về lao động)",
+                "content_text": "Người sử dụng lao động vi phạm quy định về thử việc thì bị xử phạt.",
+            }
+        )
+
+        unit = make_retrieval_units(article)[0]
+
+        self.assertEqual(unit["competition_law_id"], "12/2022/NĐ-CP")
+        self.assertEqual(
+            unit["competition_doc_title_type1"],
+            "Nghị định Quy định xử phạt vi phạm hành chính về lao động",
+        )
+        self.assertEqual(
+            unit["competition_doc_title_type2"],
+            "Nghị định 12/2022/NĐ-CP Quy định xử phạt vi phạm hành chính về lao động",
         )
 
     def test_retrieval_units_drop_related_content_note(self) -> None:

@@ -25,6 +25,10 @@ PHAPDIEN_RELATED_ARTICLE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 RELATED_CONTENT_PATTERN = re.compile(r"\s*\(?Điều này có nội dung liên quan\b.*$", re.IGNORECASE)
+COMPETITION_DOC_TITLE_CODE_PATTERN = re.compile(
+    r"^(?P<kind>.+?)\s+số\s+(?P<code>\S+)\s+(?P<title>.+)$",
+    re.IGNORECASE,
+)
 
 
 def normalize_text(value: Any) -> str:
@@ -129,3 +133,43 @@ def extract_article_no(article_title: str) -> tuple[str, str]:
         return "", ""
     raw = f"Điều {match.group(1)}"
     return raw, raw
+
+
+def normalize_competition_doc_title(doc_title: str, law_id: str, doc_title_format: str) -> str:
+    doc_title = normalize_text(doc_title)
+    match = COMPETITION_DOC_TITLE_CODE_PATTERN.match(doc_title)
+    if match:
+        kind = normalize_text(match.group("kind"))
+        code = normalize_text(match.group("code"))
+        title = uppercase_first(normalize_text(match.group("title")))
+        if doc_title_format == "type2":
+            return normalize_text(f"{kind} {code} {title}")
+        return normalize_text(f"{kind} {title}")
+    doc_title = re.sub(r"\bsố\s+", "", doc_title, flags=re.IGNORECASE)
+    doc_title = normalize_text(doc_title)
+    if law_id and law_id in doc_title:
+        prefix, title = doc_title.split(law_id, maxsplit=1)
+        kind = normalize_text(prefix.strip(" ,.;:-"))
+        title = uppercase_first(normalize_text(title.strip(" ,.;:-")))
+        if kind and title:
+            if doc_title_format == "type2":
+                return normalize_text(f"{kind} {law_id} {title}")
+            return normalize_text(f"{kind} {title}")
+    if doc_title_format == "type2" and law_id and law_id not in doc_title:
+        first_word, rest = split_first_word(doc_title)
+        if rest:
+            return normalize_text(f"{first_word} {law_id} {uppercase_first(rest)}")
+    return doc_title
+
+
+def uppercase_first(text: str) -> str:
+    if not text:
+        return text
+    return text[0].upper() + text[1:]
+
+
+def split_first_word(text: str) -> tuple[str, str]:
+    parts = text.split(" ", maxsplit=1)
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[1]

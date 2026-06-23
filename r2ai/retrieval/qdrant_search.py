@@ -850,15 +850,21 @@ def payload_to_primary_competition_ref(
     payload: dict[str, Any],
     doc_title_format: str = "type1",
 ) -> tuple[str, str, str]:
+    explicit_law_id = str(payload.get("competition_law_id") or "").strip()
+    explicit_doc_title = str(payload.get(f"competition_doc_title_{doc_title_format}") or "").strip()
+    explicit_article_no = str(payload.get("competition_article_no") or "").strip()
+    if explicit_law_id and explicit_doc_title:
+        return explicit_law_id, explicit_doc_title, explicit_article_no
+
     header = retrieval_header(payload)
     law_ids = as_text_list(payload.get("source_law_id_candidates"))
-    law_id = first_header_law_id(header, law_ids)
-    article_no = first_article_no(header)
+    law_id = explicit_law_id or first_header_law_id(header, law_ids)
+    article_no = explicit_article_no or first_article_no(header)
     if not article_no:
         article_no = first_article_no(" ".join(as_text_list(payload.get("source_article_no_candidates"))))
     if not article_no:
         article_no = first_article_no(str(payload.get("article_title", "")))
-    doc_title = doc_title_from_header(header, article_no)
+    doc_title = explicit_doc_title or doc_title_from_header(header, article_no)
     if not doc_title:
         doc_title = first_reasonable_doc_title(payload)
     doc_title = normalize_competition_doc_title(doc_title, law_id, doc_title_format)
@@ -911,6 +917,14 @@ def normalize_competition_doc_title(doc_title: str, law_id: str, doc_title_forma
         return normalize_spaces(f"{kind} {title}")
     doc_title = re.sub(r"\bsố\s+", "", doc_title, flags=re.IGNORECASE)
     doc_title = normalize_spaces(doc_title)
+    if law_id and law_id in doc_title:
+        prefix, title = doc_title.split(law_id, maxsplit=1)
+        kind = normalize_spaces(prefix.strip(" ,.;:-"))
+        title = uppercase_first(normalize_spaces(title.strip(" ,.;:-")))
+        if kind and title:
+            if doc_title_format == "type2":
+                return normalize_spaces(f"{kind} {law_id} {title}")
+            return normalize_spaces(f"{kind} {title}")
     if doc_title_format == "type2" and law_id and law_id not in doc_title:
         first_word, rest = split_first_word(doc_title)
         if rest:

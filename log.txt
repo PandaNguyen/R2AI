@@ -769,3 +769,6 @@ BM25 only type 2 (top-k = 3):
 {"ARTICLES_F2MACRO": 0.3066, "DOCS_F2MACRO": 0.4379, "ARTICLES_PRECISION": 0.2067, "ARTICLES_RECALL": 0.3833, "DOCS_PRECISION": 0.3267, "DOCS_RECALL": 0.5133, "CHINH_XAC_NOI_DUNG": 0.0, "DAY_DU": 0.0, "THUC_TIEN": 0.0, "RO_RANG": 0.0}
 dense only type 2:
 {"ARTICLES_F2MACRO": 0.3525, "DOCS_F2MACRO": 0.5162, "ARTICLES_PRECISION": 0.2233, "ARTICLES_RECALL": 0.4447, "DOCS_PRECISION": 0.4167, "DOCS_RECALL": 0.5867, "CHINH_XAC_NOI_DUNG": 0.0, "DAY_DU": 0.0, "THUC_TIEN": 0.0, "RO_RANG": 0.0}
+
+
+uv run python main.py submit-qdrant   --questions data/R2AIStage1DATA.json   --output results_rerank.json   --mode hybrid   --top-k 4   --prefetch-limit 50   --doc-title-format type1   --rerank   --reranker-model AITeamVN/Vietnamese_Reranker   --reranker-max-length 2304   --qdrant-timeout 120   --progress-every 10 --doc-title-format type1 --zip-output hybridvld_type1_top4_rerank.zip --query-embeddings data/question_embeddings.npy --model-cache-dir /data/models

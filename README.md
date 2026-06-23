@@ -71,8 +71,8 @@ Query: <question>
 Useful knobs:
 
 - `R2AI_BATCH_SIZE=8` to reduce memory pressure.
-- `R2AI_MAX_CHUNK_TOKENS=384` to control tree-aware content chunk size.
-- `R2AI_CHUNK_OVERLAP_TOKENS=48` to control sentence fallback overlap.
+- `R2AI_MAX_CHUNK_TOKENS=2048` to control tree-aware content chunk size.
+- `R2AI_CHUNK_OVERLAP_TOKENS=256` to control sentence fallback overlap.
 - `R2AI_RECREATE_COLLECTION=1` to delete and recreate the collection.
 - `R2AI_MODEL_CACHE_DIR=/kaggle/working/models` to control model cache path.
 
