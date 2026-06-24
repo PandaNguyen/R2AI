@@ -54,22 +54,24 @@ Then run one script from a fresh git clone:
 bash scripts/ingest_qdrant_cloud.sh
 ```
 
+For a VLD re-embed into a fresh Qdrant account or collection, set the new
+`QDRANT_URL`, `QDRANT_API_KEY`, and `QDRANT_COLLECTION` first. If you reuse an
+existing collection name, set `R2AI_RECREATE_COLLECTION=1` so Qdrant is deleted
+and recreated with the selected embedding model's vector config.
+
 The script installs/uses `uv`, clones the phapdien dataset if missing, falls
 back to Hugging Face snapshot download when Git LFS is unavailable, builds Phase
-1 JSONL artifacts, downloads `mainguyen9/vietlegal-harrier-0.6b` and
-`Qdrant/bm25`, creates the Qdrant collection, and upserts points in batches.
+1 JSONL artifacts, downloads the selected dense model and `Qdrant/bm25`, creates
+the Qdrant collection, and upserts points in batches.
 
-The default dense model is `mainguyen9/vietlegal-harrier-0.6b`
-(SentenceTransformer, 1024-dim cosine, 512-token max sequence length). Passages
-are embedded as raw `retrieval_text`. Later query retrieval should prepend:
-
-```text
-Instruct: Given a Vietnamese legal question, retrieve relevant legal passages that answer the question
-Query: <question>
-```
+The default dense model is `jinaai/jina-embeddings-v5-text-small`
+(SentenceTransformer with trusted remote code, 1024-dim cosine). Passages are
+embedded with Jina's retrieval/document prompt, and on-the-fly queries are
+embedded with Jina's retrieval/query prompt.
 
 Useful knobs:
 
+- `R2AI_DENSE_MODEL=jinaai/jina-embeddings-v5-text-small` to override the dense model.
 - `R2AI_BATCH_SIZE=8` to reduce memory pressure.
 - `R2AI_MAX_CHUNK_TOKENS=2048` to control tree-aware content chunk size.
 - `R2AI_CHUNK_OVERLAP_TOKENS=256` to control sentence fallback overlap.

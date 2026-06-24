@@ -23,12 +23,13 @@ class FakeDenseVector:
 
 
 class FakeDenseModel:
-    def encode(self, texts, batch_size, normalize_embeddings, show_progress_bar):  # noqa: ANN001
+    def encode(self, texts, batch_size, normalize_embeddings, show_progress_bar, **kwargs):  # noqa: ANN001
         self.last_call = {
             "texts": texts,
             "batch_size": batch_size,
             "normalize_embeddings": normalize_embeddings,
             "show_progress_bar": show_progress_bar,
+            "kwargs": kwargs,
         }
         return [FakeDenseVector([0.4, 0.6])]
 
@@ -211,6 +212,7 @@ class QdrantSearchTests(unittest.TestCase):
         self.assertEqual(client.calls[0]["prefetch"][0].limit, 4)
         self.assertIsInstance(client.calls[0]["query"], FakeModels.RrfQuery)
         self.assertEqual(dense_model.last_call["texts"], ["quy định doanh nghiệp"])
+        self.assertEqual(dense_model.last_call["kwargs"], {})
         self.assertEqual(sparse_model.last_call["texts"], ["quy định doanh nghiệp"])
 
     def test_search_qdrant_uses_precomputed_dense_vector_without_encoding(self) -> None:

@@ -15,6 +15,8 @@ from r2ai.indexing.config import (
     DEFAULT_ANSWER_ARTICLE_LIMIT,
     DEFAULT_DENSE_MODEL,
     DEFAULT_DOC_TITLE_FORMAT,
+    DEFAULT_HNSW_EF_CONSTRUCT,
+    DEFAULT_HNSW_M,
     DEFAULT_PREFETCH_LIMIT,
     DEFAULT_RERANKER_MAX_LENGTH,
     DEFAULT_RERANKER_MODEL,
@@ -85,6 +87,15 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--limit", type=int, default=None, help="Optional point limit for smoke tests")
     ingest.add_argument("--max-chunk-tokens", type=int, default=2048)
     ingest.add_argument("--chunk-overlap-tokens", type=int, default=256)
+    ingest.add_argument("--hnsw-m", type=int, default=DEFAULT_HNSW_M, help="Optional Qdrant HNSW m value")
+    ingest.add_argument(
+        "--hnsw-ef-construct",
+        "--hnsw-ef",
+        dest="hnsw_ef_construct",
+        type=int,
+        default=DEFAULT_HNSW_EF_CONSTRUCT,
+        help="Optional Qdrant HNSW ef_construct value; --hnsw-ef is a shorthand alias",
+    )
 
     search = subparsers.add_parser("search-qdrant", help="Search the Qdrant Cloud collection with hybrid retrieval")
     search.add_argument("query", help="Vietnamese legal question or keyword query")
@@ -234,6 +245,8 @@ def main() -> None:
                 limit=args.limit,
                 max_chunk_tokens=args.max_chunk_tokens,
                 chunk_overlap_tokens=args.chunk_overlap_tokens,
+                hnsw_m=args.hnsw_m,
+                hnsw_ef_construct=args.hnsw_ef_construct,
             )
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))

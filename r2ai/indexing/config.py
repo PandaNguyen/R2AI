@@ -24,6 +24,8 @@ DEFAULT_RERANKER_MODEL = "AITeamVN/Vietnamese_Reranker"
 DEFAULT_RERANKER_MAX_LENGTH = 2304
 DEFAULT_RERANK_THRESHOLD: float | None = None
 DEFAULT_MODEL_CACHE_DIR = Path.cwd() / ".cache" 
+DEFAULT_HNSW_M: int | None = None
+DEFAULT_HNSW_EF_CONSTRUCT: int | None = None
 
 @dataclass(frozen=True)
 class QdrantIngestConfig:
@@ -43,6 +45,8 @@ class QdrantIngestConfig:
     limit: int | None = None
     max_chunk_tokens: int = DEFAULT_MAX_CHUNK_TOKENS
     chunk_overlap_tokens: int = DEFAULT_CHUNK_OVERLAP_TOKENS
+    hnsw_m: int | None = DEFAULT_HNSW_M
+    hnsw_ef_construct: int | None = DEFAULT_HNSW_EF_CONSTRUCT
 
     @classmethod
     def from_env(
@@ -59,6 +63,8 @@ class QdrantIngestConfig:
         limit: int | None = None,
         max_chunk_tokens: int = DEFAULT_MAX_CHUNK_TOKENS,
         chunk_overlap_tokens: int = DEFAULT_CHUNK_OVERLAP_TOKENS,
+        hnsw_m: int | None = DEFAULT_HNSW_M,
+        hnsw_ef_construct: int | None = DEFAULT_HNSW_EF_CONSTRUCT,
     ) -> "QdrantIngestConfig":
         qdrant_url = os.getenv("QDRANT_URL", "").strip()
         qdrant_api_key = os.getenv("QDRANT_API_KEY", "").strip()
@@ -81,6 +87,8 @@ class QdrantIngestConfig:
             limit=limit,
             max_chunk_tokens=max_chunk_tokens,
             chunk_overlap_tokens=chunk_overlap_tokens,
+            hnsw_m=hnsw_m,
+            hnsw_ef_construct=hnsw_ef_construct,
         )
 
 

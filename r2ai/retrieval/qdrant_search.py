@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Literal
 
 from r2ai.indexing.config import DEFAULT_QUERY_INSTRUCTION, QdrantSearchConfig
-from r2ai.indexing.qdrant_ingest import _load_dense_model, _load_sparse_model, _make_qdrant_client
+from r2ai.indexing.qdrant_ingest import _dense_encode_kwargs, _load_dense_model, _load_sparse_model, _make_qdrant_client
 from r2ai.indexing.retry import is_retryable_request_error, retry_request
 
 RRF_K = 60
@@ -565,13 +565,17 @@ def dense_query_vector(config: QdrantSearchConfig, *, dense_model: Any | None) -
         return [float(value) for value in config.query_vector]
     if dense_model is None:
         dense_model = _load_dense_model(config.dense_model_name, config.model_cache_dir)
-    query_instruction = config.query_instruction if config.query_instruction is not None else DEFAULT_QUERY_INSTRUCTION
-    dense_query_text = f"{query_instruction}{config.query_text.strip()}"
+    encode_kwargs = _dense_encode_kwargs(config.dense_model_name, prompt_name="query")
+    dense_query_text = config.query_text.strip()
+    if not encode_kwargs:
+        query_instruction = config.query_instruction if config.query_instruction is not None else DEFAULT_QUERY_INSTRUCTION
+        dense_query_text = f"{query_instruction}{dense_query_text}"
     dense_vector = dense_model.encode(
         [dense_query_text],
         batch_size=1,
         normalize_embeddings=True,
         show_progress_bar=False,
+        **encode_kwargs,
     )[0]
     return [float(value) for value in dense_vector.tolist()]
 

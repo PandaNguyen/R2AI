@@ -29,6 +29,8 @@ def ingest_phapdien_to_qdrant(config: QdrantIngestConfig) -> dict[str, Any]:
     dense_model = _load_dense_model(config.dense_model_name, config.model_cache_dir)
     sparse_model = _load_sparse_model(config.sparse_model_name, config.model_cache_dir)
     dense_size = int(dense_model.get_sentence_embedding_dimension())
+    dense_max_seq_length = int(getattr(dense_model, "max_seq_length", 0) or 0)
+    payload_metadata = embedding_payload_metadata(config, dense_size, dense_max_seq_length)
 
     client, models = _make_qdrant_client(config.qdrant_url, config.qdrant_api_key)
     _ensure_collection(
@@ -38,11 +40,20 @@ def ingest_phapdien_to_qdrant(config: QdrantIngestConfig) -> dict[str, Any]:
         dense_vector_name=config.dense_vector_name,
         sparse_vector_name=config.sparse_vector_name,
         dense_size=dense_size,
+        hnsw_m=config.hnsw_m,
+        hnsw_ef_construct=config.hnsw_ef_construct,
         recreate=config.recreate_collection,
     )
     _ensure_payload_indexes(client=client, models=models, collection_name=config.collection_name)
 
-    checkpoint_path = _ingest_checkpoint_path(config.build_dir, config.collection_name)
+    checkpoint_path = _ingest_checkpoint_path(
+        config.build_dir,
+        config.collection_name,
+        config.dense_model_name,
+        config.sparse_model_name,
+        dense_size,
+        dense_max_seq_length,
+    )
     if config.recreate_collection and checkpoint_path.exists():
         checkpoint_path.unlink()
     completed_ids = read_ingest_checkpoint(checkpoint_path)
@@ -55,6 +66,7 @@ def ingest_phapdien_to_qdrant(config: QdrantIngestConfig) -> dict[str, Any]:
             completed_ids=completed_ids,
             batch_size=max(config.batch_size, 256),
             limit=config.limit,
+            payload_metadata=payload_metadata,
         )
         if rebuilt:
             print(f"Rebuilt Qdrant ingest checkpoint from remote collection: {rebuilt} existing point ids", flush=True)
@@ -73,6 +85,8 @@ def ingest_phapdien_to_qdrant(config: QdrantIngestConfig) -> dict[str, Any]:
             models=models,
             dense_vector_name=config.dense_vector_name,
             sparse_vector_name=config.sparse_vector_name,
+            dense_model_name=config.dense_model_name,
+            payload_metadata=payload_metadata,
         )
         retry_request(
             lambda: client.upsert(collection_name=config.collection_name, points=points, wait=True),
@@ -88,6 +102,8 @@ def ingest_phapdien_to_qdrant(config: QdrantIngestConfig) -> dict[str, Any]:
         "dense_model": config.dense_model_name,
         "sparse_model": config.sparse_model_name,
         "dense_size": dense_size,
+        "hnsw_m": config.hnsw_m,
+        "hnsw_ef_construct": config.hnsw_ef_construct,
         "points_upserted": total_points,
         "points_skipped_from_checkpoint": max(0, skipped_points),
         "checkpoint": str(checkpoint_path),
@@ -158,6 +174,7 @@ def rebuild_ingest_checkpoint_from_qdrant(
     completed_ids: set[str],
     batch_size: int,
     limit: int | None,
+    payload_metadata: dict[str, Any] | None = None,
 ) -> int:
     rebuilt = 0
     checked = 0
@@ -182,7 +199,11 @@ def rebuild_ingest_checkpoint_from_qdrant(
             if (
                 point_id is not None
                 and point_id not in completed_ids
-                and remote_point_matches_preview(rows_by_id.get(point_id), point)
+                and remote_point_matches_preview(
+                    rows_by_id.get(point_id),
+                    point,
+                    payload_metadata=payload_metadata,
+                )
             ):
                 existing_rows.append({"id": point_id})
         if existing_rows:
@@ -203,10 +224,16 @@ def _point_id(point: Any) -> str | None:
     return str(value) if value is not None else None
 
 
-def remote_point_matches_preview(preview_row: dict[str, Any] | None, point: Any) -> bool:
+def remote_point_matches_preview(
+    preview_row: dict[str, Any] | None,
+    point: Any,
+    payload_metadata: dict[str, Any] | None = None,
+) -> bool:
     if preview_row is None:
         return False
-    expected_payload = preview_row.get("payload") or {}
+    expected_payload = dict(preview_row.get("payload") or {})
+    if payload_metadata:
+        expected_payload.update(payload_metadata)
     remote_payload = _point_payload(point)
     if not expected_payload:
         return True
@@ -218,6 +245,12 @@ def remote_point_matches_preview(preview_row: dict[str, Any] | None, point: Any)
         "chunk_count",
         "canonical_article_id",
         "retrieval_text_sha1",
+        "embedding_dense_model",
+        "embedding_sparse_model",
+        "embedding_dense_size",
+        "embedding_dense_max_seq_length",
+        "embedding_dense_vector_name",
+        "embedding_sparse_vector_name",
     )
     checked = False
     for field in fields:
@@ -252,6 +285,8 @@ def make_points(
     models: Any,
     dense_vector_name: str,
     sparse_vector_name: str,
+    dense_model_name: str | None = None,
+    payload_metadata: dict[str, Any] | None = None,
 ) -> list[Any]:
     texts = [row["payload"]["retrieval_text"] for row in rows]
     dense_vectors = dense_model.encode(
@@ -259,15 +294,19 @@ def make_points(
         batch_size=len(texts),
         normalize_embeddings=True,
         show_progress_bar=False,
+        **_dense_encode_kwargs(dense_model_name, prompt_name="document"),
     )
     sparse_vectors = list(sparse_model.embed(texts))
 
     points = []
     for row, dense_vector, sparse_vector in zip(rows, dense_vectors, sparse_vectors, strict=True):
+        payload = dict(row["payload"])
+        if payload_metadata:
+            payload.update(payload_metadata)
         points.append(
             models.PointStruct(
                 id=row["id"],
-                payload=row["payload"],
+                payload=payload,
                 vector={
                     dense_vector_name: dense_vector.tolist(),
                     sparse_vector_name: models.SparseVector(
@@ -284,9 +323,41 @@ def _qdrant_preview_path(build_dir: Path) -> Path:
     return build_dir / "qdrant_payload_preview.jsonl"
 
 
-def _ingest_checkpoint_path(build_dir: Path, collection_name: str) -> Path:
-    safe_collection = re.sub(r"[^A-Za-z0-9_.-]+", "_", collection_name).strip("_") or "collection"
-    return build_dir / f"qdrant_ingest_checkpoint_{safe_collection}.jsonl"
+def _ingest_checkpoint_path(
+    build_dir: Path,
+    collection_name: str,
+    dense_model_name: str = "",
+    sparse_model_name: str = "",
+    dense_size: int | None = None,
+    dense_max_seq_length: int | None = None,
+) -> Path:
+    parts = [collection_name]
+    if dense_model_name:
+        parts.append(dense_model_name)
+    if sparse_model_name:
+        parts.append(sparse_model_name)
+    if dense_size is not None:
+        parts.append(str(dense_size))
+    if dense_max_seq_length is not None:
+        parts.append(f"seq{dense_max_seq_length}")
+    checkpoint_key = "__".join(parts)
+    safe_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", checkpoint_key).strip("_") or "collection"
+    return build_dir / f"qdrant_ingest_checkpoint_{safe_key}.jsonl"
+
+
+def embedding_payload_metadata(
+    config: QdrantIngestConfig,
+    dense_size: int,
+    dense_max_seq_length: int,
+) -> dict[str, Any]:
+    return {
+        "embedding_dense_model": config.dense_model_name,
+        "embedding_sparse_model": config.sparse_model_name,
+        "embedding_dense_size": dense_size,
+        "embedding_dense_max_seq_length": dense_max_seq_length,
+        "embedding_dense_vector_name": config.dense_vector_name,
+        "embedding_sparse_vector_name": config.sparse_vector_name,
+    }
 
 
 def _preferred_torch_device() -> str:
@@ -306,9 +377,25 @@ def _load_dense_model(model_name: str, cache_dir: Path | None) -> Any:
     kwargs: dict[str, Any] = {"device": _preferred_torch_device()}
     if cache_dir:
         kwargs["cache_folder"] = str(cache_dir)
+    if _dense_model_requires_remote_code(model_name):
+        kwargs["trust_remote_code"] = True
     model = SentenceTransformer(model_name, **kwargs)
-    model.max_seq_length = 2048
+    model.max_seq_length = 32768 if _is_jina_v5_text_model(model_name) else 2048
     return model
+
+
+def _dense_model_requires_remote_code(model_name: str) -> bool:
+    return _is_jina_v5_text_model(model_name)
+
+
+def _dense_encode_kwargs(model_name: str | None, prompt_name: str) -> dict[str, str]:
+    if _is_jina_v5_text_model(model_name or ""):
+        return {"task": "retrieval", "prompt_name": prompt_name}
+    return {}
+
+
+def _is_jina_v5_text_model(model_name: str) -> bool:
+    return model_name.lower().startswith("jinaai/jina-embeddings-v5-text")
 
 
 def _load_sparse_model(model_name: str, cache_dir: Path | None) -> Any:
@@ -337,6 +424,8 @@ def _ensure_collection(
     dense_vector_name: str,
     sparse_vector_name: str,
     dense_size: int,
+    hnsw_m: int | None,
+    hnsw_ef_construct: int | None,
     recreate: bool,
 ) -> None:
     if recreate and retry_request(
@@ -352,6 +441,20 @@ def _ensure_collection(
         lambda: client.collection_exists(collection_name=collection_name),
         label=f"Qdrant collection_exists {collection_name}",
     ):
+        _validate_existing_collection(
+            client=client,
+            collection_name=collection_name,
+            dense_vector_name=dense_vector_name,
+            sparse_vector_name=sparse_vector_name,
+            dense_size=dense_size,
+        )
+        _update_hnsw_config(
+            client=client,
+            models=models,
+            collection_name=collection_name,
+            hnsw_m=hnsw_m,
+            hnsw_ef_construct=hnsw_ef_construct,
+        )
         return
 
     retry_request(
@@ -363,9 +466,98 @@ def _ensure_collection(
             sparse_vectors_config={
                 sparse_vector_name: models.SparseVectorParams(modifier=models.Modifier.IDF),
             },
+            hnsw_config=_hnsw_config_diff(models, hnsw_m=hnsw_m, hnsw_ef_construct=hnsw_ef_construct),
         ),
         label=f"Qdrant create_collection {collection_name}",
     )
+
+
+def _update_hnsw_config(
+    *,
+    client: Any,
+    models: Any,
+    collection_name: str,
+    hnsw_m: int | None,
+    hnsw_ef_construct: int | None,
+) -> None:
+    hnsw_config = _hnsw_config_diff(models, hnsw_m=hnsw_m, hnsw_ef_construct=hnsw_ef_construct)
+    if hnsw_config is None:
+        return
+    retry_request(
+        lambda: client.update_collection(
+            collection_name=collection_name,
+            hnsw_config=hnsw_config,
+        ),
+        label=f"Qdrant update_collection HNSW {collection_name}",
+    )
+
+
+def _hnsw_config_diff(models: Any, *, hnsw_m: int | None, hnsw_ef_construct: int | None) -> Any | None:
+    kwargs = {}
+    if hnsw_m is not None:
+        kwargs["m"] = hnsw_m
+    if hnsw_ef_construct is not None:
+        kwargs["ef_construct"] = hnsw_ef_construct
+    if not kwargs:
+        return None
+    return models.HnswConfigDiff(**kwargs)
+
+
+def _validate_existing_collection(
+    *,
+    client: Any,
+    collection_name: str,
+    dense_vector_name: str,
+    sparse_vector_name: str,
+    dense_size: int,
+) -> None:
+    collection_info = retry_request(
+        lambda: client.get_collection(collection_name=collection_name),
+        label=f"Qdrant get_collection {collection_name}",
+    )
+    actual_dense_size = _collection_dense_vector_size(collection_info, dense_vector_name)
+    if actual_dense_size is None:
+        raise RuntimeError(
+            f"Existing Qdrant collection {collection_name!r} has no dense vector named "
+            f"{dense_vector_name!r}. Use --recreate-collection or a new --collection."
+        )
+    if actual_dense_size != dense_size:
+        raise RuntimeError(
+            f"Existing Qdrant collection {collection_name!r} has dense vector {dense_vector_name!r} "
+            f"size {actual_dense_size}, but the selected dense model requires {dense_size}. "
+            "Use --recreate-collection or a new --collection when changing embedding models."
+        )
+    if not _collection_has_sparse_vector(collection_info, sparse_vector_name):
+        raise RuntimeError(
+            f"Existing Qdrant collection {collection_name!r} has no sparse vector named "
+            f"{sparse_vector_name!r}. Use --recreate-collection or a new --collection."
+        )
+
+
+def _collection_dense_vector_size(collection_info: Any, dense_vector_name: str) -> int | None:
+    params = _collection_params(collection_info)
+    vectors = _object_value(params, "vectors")
+    vector_params = vectors.get(dense_vector_name) if isinstance(vectors, dict) else vectors
+    size = _object_value(vector_params, "size")
+    return int(size) if size is not None else None
+
+
+def _collection_has_sparse_vector(collection_info: Any, sparse_vector_name: str) -> bool:
+    params = _collection_params(collection_info)
+    sparse_vectors = _object_value(params, "sparse_vectors")
+    if isinstance(sparse_vectors, dict):
+        return sparse_vector_name in sparse_vectors
+    return sparse_vectors is not None
+
+
+def _collection_params(collection_info: Any) -> Any:
+    return _object_value(_object_value(collection_info, "config"), "params")
+
+
+def _object_value(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(key)
+    return getattr(value, key, None)
 
 
 def _ensure_payload_indexes(client: Any, models: Any, collection_name: str) -> None:

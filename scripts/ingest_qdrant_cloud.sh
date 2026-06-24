@@ -54,10 +54,22 @@ INGEST_ARGS=(
   --source-dir "$DATA_DIR"
   --build-dir "$BUILD_DIR"
   --model-cache-dir "$MODEL_CACHE_DIR"
+  --dense-model "${R2AI_DENSE_MODEL:-jinaai/jina-embeddings-v5-text-small}"
+  --sparse-model "${R2AI_SPARSE_MODEL:-Qdrant/bm25}"
   --batch-size "${R2AI_BATCH_SIZE:-64}"
   --max-chunk-tokens "${R2AI_MAX_CHUNK_TOKENS:-2048}"
   --chunk-overlap-tokens "${R2AI_CHUNK_OVERLAP_TOKENS:-256}"
 )
+
+if [[ -n "${R2AI_HNSW_M:-}" ]]; then
+  INGEST_ARGS+=(--hnsw-m "$R2AI_HNSW_M")
+fi
+
+if [[ -n "${R2AI_HNSW_EF_CONSTRUCT:-}" ]]; then
+  INGEST_ARGS+=(--hnsw-ef-construct "$R2AI_HNSW_EF_CONSTRUCT")
+elif [[ -n "${R2AI_HNSW_EF:-}" ]]; then
+  INGEST_ARGS+=(--hnsw-ef "$R2AI_HNSW_EF")
+fi
 
 if [[ -n "${QDRANT_COLLECTION:-}" ]]; then
   INGEST_ARGS+=(--collection "$QDRANT_COLLECTION")
