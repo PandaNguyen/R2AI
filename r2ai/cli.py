@@ -107,6 +107,14 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--rerank", action="store_true", help="Rerank retrieved candidates with a cross-encoder")
     search.add_argument("--reranker-model", default=DEFAULT_RERANKER_MODEL)
     search.add_argument("--reranker-max-length", type=int, default=DEFAULT_RERANKER_MAX_LENGTH)
+    search.add_argument(
+        "--rerank-threshold",
+        "--rerank-thresold",
+        dest="rerank_threshold",
+        type=float,
+        default=None,
+        help="Only keep reranked results with rerank_score >= this threshold",
+    )
     search.add_argument("--topic-title", default=None)
     search.add_argument("--subject-title", default=None)
     search.add_argument("--source-law-id", default=None)
@@ -145,6 +153,14 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--rerank", action="store_true", help="Rerank retrieved candidates with a cross-encoder")
     submit.add_argument("--reranker-model", default=DEFAULT_RERANKER_MODEL)
     submit.add_argument("--reranker-max-length", type=int, default=DEFAULT_RERANKER_MAX_LENGTH)
+    submit.add_argument(
+        "--rerank-threshold",
+        "--rerank-thresold",
+        dest="rerank_threshold",
+        type=float,
+        default=None,
+        help="Only keep reranked results with rerank_score >= this threshold",
+    )
     submit.add_argument("--limit", type=int, default=None, help="Optional number of questions for smoke tests")
     submit.add_argument("--progress-every", type=int, default=25)
     submit.add_argument("--qdrant-batch-size", type=int, default=64, help="Batch size for dense .npy Qdrant queries")
@@ -178,6 +194,8 @@ def main() -> None:
     load_env_file()
     parser = build_parser()
     args = parser.parse_args()
+    if getattr(args, "rerank_threshold", None) is not None and not getattr(args, "rerank", False):
+        parser.error("--rerank-threshold requires --rerank")
 
     if args.command == "build-phapdien-data":
         report = build_phapdien_data(
@@ -241,6 +259,7 @@ def main() -> None:
                 rerank=args.rerank,
                 reranker_model_name=args.reranker_model,
                 reranker_max_length=args.reranker_max_length,
+                rerank_threshold=args.rerank_threshold,
                 topic_title=args.topic_title,
                 subject_title=args.subject_title,
                 source_law_id=args.source_law_id,
@@ -279,6 +298,7 @@ def main() -> None:
                 rerank=args.rerank,
                 reranker_model_name=args.reranker_model,
                 reranker_max_length=args.reranker_max_length,
+                rerank_threshold=args.rerank_threshold,
                 topic_title=args.topic_title,
                 subject_title=args.subject_title,
                 source_law_id=args.source_law_id,

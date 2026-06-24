@@ -92,6 +92,8 @@ Then enable the Vietnamese cross-encoder reranker after Qdrant retrieval:
 
 The default reranker is `AITeamVN/Vietnamese_Reranker` with max sequence length
 `2304`. Use `--reranker-model` or `--reranker-max-length` to override it.
+Use `--rerank-threshold` to keep only candidates with `rerank_score` greater than or equal
+to that value after reranking and before the final `top_k` cut.
 
 ### Kaggle Rerank Run
 

@@ -155,6 +155,7 @@ def search_qdrant(
         "rerank": config.rerank,
         "reranker_model": config.reranker_model_name if config.rerank else None,
         "reranker_max_length": config.reranker_max_length if config.rerank else None,
+        "rerank_threshold": config.rerank_threshold if config.rerank else None,
         "filters": summarize_filters(config),
         "results": results,
     }
@@ -336,6 +337,7 @@ def search_qdrant_dense_batch(
                 "rerank": config.rerank,
                 "reranker_model": config.reranker_model_name if config.rerank else None,
                 "reranker_max_length": config.reranker_max_length if config.rerank else None,
+                "rerank_threshold": config.rerank_threshold if config.rerank else None,
                 "filters": summarize_filters(config),
                 "results": maybe_rerank_results(
                     config,
@@ -427,6 +429,7 @@ def search_qdrant_sparse_or_hybrid_batch(
                 "rerank": config.rerank,
                 "reranker_model": config.reranker_model_name if config.rerank else None,
                 "reranker_max_length": config.reranker_max_length if config.rerank else None,
+                "rerank_threshold": config.rerank_threshold if config.rerank else None,
                 "filters": summarize_filters(config),
                 "results": maybe_rerank_results(
                     config,
@@ -551,6 +554,7 @@ def empty_search_result(config: QdrantSearchConfig, query_text: str, mode: str) 
         "rerank": config.rerank,
         "reranker_model": config.reranker_model_name if config.rerank else None,
         "reranker_max_length": config.reranker_max_length if config.rerank else None,
+        "rerank_threshold": config.rerank_threshold if config.rerank else None,
         "filters": summarize_filters(config),
         "results": [],
     }
@@ -693,6 +697,11 @@ def maybe_rerank_results(
             str(item["id"]),
         )
     )
+    if config.rerank_threshold is not None:
+        reranked = [
+            item for item in reranked
+            if item["rerank_score"] >= config.rerank_threshold
+        ]
     for rank, item in enumerate(reranked, start=1):
         item["rank"] = rank
         item["rerank_rank"] = rank

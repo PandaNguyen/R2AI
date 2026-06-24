@@ -256,6 +256,29 @@ class QdrantSearchTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["retrieval_rank"], 2)
         self.assertEqual(result["results"][0]["rerank_score"], 5.0)
 
+    def test_search_qdrant_filters_reranked_results_by_threshold(self) -> None:
+        config = QdrantSearchConfig(
+            collection_name="demo",
+            qdrant_url="https://example.com",
+            qdrant_api_key="secret",
+            query_text="quy định doanh nghiệp",
+            search_mode="dense",
+            query_vector=[0.1, 0.2],
+            top_k=2,
+            prefetch_limit=2,
+            rerank=True,
+            rerank_threshold=0.0,
+        )
+        client = FakeClient()
+        tokenizer = FakeRerankerTokenizer()
+        model = FakeRerankerModel()
+
+        result = search_qdrant(config, client=client, models=FakeModels, reranker=(tokenizer, model))
+
+        self.assertEqual(result["rerank_threshold"], 0.0)
+        self.assertEqual([item["id"] for item in result["results"]], ["chunk-2"])
+        self.assertTrue(all(item["rerank_score"] >= 0.0 for item in result["results"]))
+
     def test_format_competition_row_matches_challenge_schema(self) -> None:
         result = {
             "search_mode": "dense",
