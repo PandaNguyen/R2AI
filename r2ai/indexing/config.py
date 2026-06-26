@@ -21,10 +21,13 @@ DEFAULT_SEARCH_QDRANT_TIMEOUT = 30.0
 DEFAULT_DOC_TITLE_FORMAT = "type1"
 DEFAULT_ANSWER_ARTICLE_LIMIT: int | None = None
 DEFAULT_RERANKER_MODEL = "AITeamVN/Vietnamese_Reranker"
+DEFAULT_JINA_RERANKER_MODEL = "jinaai/jina-reranker-v3"
+DEFAULT_USE_JINA_RERANKER = False
 DEFAULT_RERANKER_MAX_LENGTH = 2304
 DEFAULT_RERANK_THRESHOLD: float | None = None
 DEFAULT_EXCLUDE_LOCAL_DOCUMENTS = True
 DEFAULT_REQUIRE_ARTICLE = True
+DEFAULT_TRACE_SEARCH = False
 DEFAULT_MODEL_CACHE_DIR = Path.cwd() / ".cache" 
 DEFAULT_HNSW_M: int | None = None
 DEFAULT_HNSW_EF_CONSTRUCT: int | None = None
@@ -115,10 +118,12 @@ class QdrantSearchConfig:
     query_instruction: str = DEFAULT_QUERY_INSTRUCTION
     rerank: bool = False
     reranker_model_name: str = DEFAULT_RERANKER_MODEL
+    use_jina_reranker: bool = DEFAULT_USE_JINA_RERANKER
     reranker_max_length: int = DEFAULT_RERANKER_MAX_LENGTH
     rerank_threshold: float | None = DEFAULT_RERANK_THRESHOLD
     exclude_local_documents: bool = DEFAULT_EXCLUDE_LOCAL_DOCUMENTS
     require_article: bool = DEFAULT_REQUIRE_ARTICLE
+    trace_search: bool = DEFAULT_TRACE_SEARCH
     topic_title: str | None = None
     subject_title: str | None = None
     source_law_id: str | None = None
@@ -144,10 +149,12 @@ class QdrantSearchConfig:
         query_instruction: str = DEFAULT_QUERY_INSTRUCTION,
         rerank: bool = False,
         reranker_model_name: str = DEFAULT_RERANKER_MODEL,
+        use_jina_reranker: bool = DEFAULT_USE_JINA_RERANKER,
         reranker_max_length: int = DEFAULT_RERANKER_MAX_LENGTH,
         rerank_threshold: float | None = DEFAULT_RERANK_THRESHOLD,
         exclude_local_documents: bool = DEFAULT_EXCLUDE_LOCAL_DOCUMENTS,
         require_article: bool = DEFAULT_REQUIRE_ARTICLE,
+        trace_search: bool = DEFAULT_TRACE_SEARCH,
         topic_title: str | None = None,
         subject_title: str | None = None,
         source_law_id: str | None = None,
@@ -161,6 +168,8 @@ class QdrantSearchConfig:
             raise RuntimeError("Missing QDRANT_URL environment variable.")
         if not qdrant_api_key:
             raise RuntimeError("Missing QDRANT_API_KEY environment variable.")
+        if use_jina_reranker and reranker_model_name == DEFAULT_RERANKER_MODEL:
+            reranker_model_name = DEFAULT_JINA_RERANKER_MODEL
         return cls(
             collection_name=collection_name or os.getenv("QDRANT_COLLECTION", DEFAULT_COLLECTION),
             qdrant_url=qdrant_url,
@@ -179,10 +188,12 @@ class QdrantSearchConfig:
             query_instruction=query_instruction,
             rerank=rerank,
             reranker_model_name=reranker_model_name,
+            use_jina_reranker=use_jina_reranker,
             reranker_max_length=reranker_max_length,
             rerank_threshold=rerank_threshold,
             exclude_local_documents=exclude_local_documents,
             require_article=require_article,
+            trace_search=trace_search,
             topic_title=topic_title,
             subject_title=subject_title,
             source_law_id=source_law_id,

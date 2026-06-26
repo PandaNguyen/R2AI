@@ -17,14 +17,17 @@ from r2ai.indexing.config import (
     DEFAULT_DOC_TITLE_FORMAT,
     DEFAULT_EXCLUDE_LOCAL_DOCUMENTS,
     DEFAULT_HNSW_EF_CONSTRUCT,
+    DEFAULT_JINA_RERANKER_MODEL,
     DEFAULT_HNSW_M,
     DEFAULT_PREFETCH_LIMIT,
     DEFAULT_RERANKER_MAX_LENGTH,
     DEFAULT_RERANKER_MODEL,
     DEFAULT_REQUIRE_ARTICLE,
     DEFAULT_SEARCH_QDRANT_TIMEOUT,
+    DEFAULT_USE_JINA_RERANKER,
     DEFAULT_SEARCH_MODE,
     DEFAULT_SPARSE_MODEL,
+    DEFAULT_TRACE_SEARCH,
     QdrantIngestConfig,
     QdrantSearchConfig,
 )
@@ -119,6 +122,13 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--query-instruction", default="", help="Optional prefix for on-the-fly dense embedding")
     search.add_argument("--rerank", action="store_true", help="Rerank retrieved candidates with a cross-encoder")
     search.add_argument("--reranker-model", default=DEFAULT_RERANKER_MODEL)
+    search.add_argument(
+        "--jina-reranker",
+        dest="use_jina_reranker",
+        action="store_true",
+        default=DEFAULT_USE_JINA_RERANKER,
+        help=f"Use AutoModel.rerank backend; defaults --reranker-model to {DEFAULT_JINA_RERANKER_MODEL}",
+    )
     search.add_argument("--reranker-max-length", type=int, default=DEFAULT_RERANKER_MAX_LENGTH)
     search.add_argument(
         "--rerank-threshold",
@@ -147,6 +157,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         default=DEFAULT_REQUIRE_ARTICLE,
         help="Allow candidates that do not resolve to a competition article ref",
+    )
+    search.add_argument(
+        "--trace-search",
+        action="store_true",
+        default=DEFAULT_TRACE_SEARCH,
+        help="Write JSONL trace logs for search, rerank, and final submission refs to stderr",
     )
 
     submit = subparsers.add_parser("submit-qdrant", help="Create competition results.json from Qdrant retrieval")
@@ -179,6 +195,13 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--query-instruction", default="", help="Optional prefix for on-the-fly dense embedding")
     submit.add_argument("--rerank", action="store_true", help="Rerank retrieved candidates with a cross-encoder")
     submit.add_argument("--reranker-model", default=DEFAULT_RERANKER_MODEL)
+    submit.add_argument(
+        "--jina-reranker",
+        dest="use_jina_reranker",
+        action="store_true",
+        default=DEFAULT_USE_JINA_RERANKER,
+        help=f"Use AutoModel.rerank backend; defaults --reranker-model to {DEFAULT_JINA_RERANKER_MODEL}",
+    )
     submit.add_argument("--reranker-max-length", type=int, default=DEFAULT_RERANKER_MAX_LENGTH)
     submit.add_argument(
         "--rerank-threshold",
@@ -210,6 +233,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         default=DEFAULT_REQUIRE_ARTICLE,
         help="Allow candidates that do not resolve to a competition article ref",
+    )
+    submit.add_argument(
+        "--trace-search",
+        action="store_true",
+        default=DEFAULT_TRACE_SEARCH,
+        help="Write JSONL trace logs for search, rerank, and final submission refs to stderr",
     )
     return parser
 
@@ -301,10 +330,12 @@ def main() -> None:
                 query_instruction=args.query_instruction,
                 rerank=args.rerank,
                 reranker_model_name=args.reranker_model,
+                use_jina_reranker=args.use_jina_reranker,
                 reranker_max_length=args.reranker_max_length,
                 rerank_threshold=args.rerank_threshold,
                 exclude_local_documents=args.exclude_local_documents,
                 require_article=args.require_article,
+                trace_search=args.trace_search,
                 topic_title=args.topic_title,
                 subject_title=args.subject_title,
                 source_law_id=args.source_law_id,
@@ -342,10 +373,12 @@ def main() -> None:
                 query_instruction=args.query_instruction,
                 rerank=args.rerank,
                 reranker_model_name=args.reranker_model,
+                use_jina_reranker=args.use_jina_reranker,
                 reranker_max_length=args.reranker_max_length,
                 rerank_threshold=args.rerank_threshold,
                 exclude_local_documents=args.exclude_local_documents,
                 require_article=args.require_article,
+                trace_search=args.trace_search,
                 topic_title=args.topic_title,
                 subject_title=args.subject_title,
                 source_law_id=args.source_law_id,

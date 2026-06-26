@@ -21,3 +21,4 @@ output.json
 *.zip
 results*.json
 results*.jsonl
+trace_search_jina.jsonl

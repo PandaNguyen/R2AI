@@ -6,13 +6,19 @@ import csv
 import contextlib
 import json
 import re
+import sys
 import time
 import zipfile
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
-from r2ai.indexing.config import DEFAULT_QUERY_INSTRUCTION, QdrantSearchConfig
+from r2ai.indexing.config import (
+    DEFAULT_JINA_RERANKER_MODEL,
+    DEFAULT_QUERY_INSTRUCTION,
+    DEFAULT_RERANKER_MODEL,
+    QdrantSearchConfig,
+)
 from r2ai.indexing.qdrant_ingest import _dense_encode_kwargs, _load_dense_model, _load_sparse_model, _make_qdrant_client
 from r2ai.indexing.retry import is_retryable_request_error, retry_request
 
@@ -56,6 +62,70 @@ LOCAL_TITLE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 OutputFormat = Literal["json", "jsonl"]
+TRACE_SAMPLE_LIMIT = 5
+
+
+def trace_log_enabled(enabled: bool, event: str, **fields: Any) -> None:
+    if not enabled:
+        return
+    record = {"event": event, **fields}
+    print(json.dumps(record, ensure_ascii=False, sort_keys=True), file=sys.stderr, flush=True)
+
+
+def trace_log(config: QdrantSearchConfig, event: str, **fields: Any) -> None:
+    trace_log_enabled(config.trace_search, event, **fields)
+
+
+def trace_search_results(
+    config: QdrantSearchConfig,
+    event: str,
+    results: list[dict[str, Any]],
+    *,
+    query_id: Any | None = None,
+    limit: int = TRACE_SAMPLE_LIMIT,
+    **fields: Any,
+) -> None:
+    if not config.trace_search:
+        return
+    trace_log(
+        config,
+        event,
+        query_id=query_id,
+        count=len(results),
+        samples=[trace_result_summary(item, config.doc_title_format) for item in results[:limit]],
+        **fields,
+    )
+
+
+def trace_result_summary(item: dict[str, Any], doc_title_format: str) -> dict[str, Any]:
+    payload = item.get("payload") or {}
+    docs = payload_to_competition_docs(payload, doc_title_format=doc_title_format)
+    articles = payload_to_competition_articles(payload, doc_title_format=doc_title_format)
+    return {
+        "id": item.get("id"),
+        "rank": item.get("rank"),
+        "score": item.get("score"),
+        "rerank_score": item.get("rerank_score"),
+        "retrieval_rank": item.get("retrieval_rank"),
+        "doc": docs[0] if docs else "",
+        "article": articles[0] if articles else "",
+        "is_local": is_local_document_payload(payload),
+        "has_article": bool(articles),
+        "payload_keys": sorted(payload)[:12],
+    }
+
+
+def trace_submission_row(result: dict[str, Any], row: dict[str, Any]) -> None:
+    trace_log_enabled(
+        bool(result.get("trace_search")),
+        "submission_row",
+        query_id=row.get("id"),
+        relevant_doc_count=len(row.get("relevant_docs") or []),
+        relevant_article_count=len(row.get("relevant_articles") or []),
+        answer=row.get("answer"),
+        relevant_docs=row.get("relevant_docs") or [],
+        relevant_articles=row.get("relevant_articles") or [],
+    )
 
 
 def search_qdrant(
@@ -63,7 +133,7 @@ def search_qdrant(
     *,
     dense_model: Any | None = None,
     sparse_model: Any | None = None,
-    reranker: tuple[Any, Any] | None = None,
+    reranker: Any | None = None,
     client: Any | None = None,
     models: Any | None = None,
 ) -> dict[str, Any]:
@@ -83,6 +153,20 @@ def search_qdrant(
     query_filter = build_qdrant_filter(config, models)
     search_limit = search_limit_for_config(config)
     retrieval_limit = retrieval_limit_for_config(config, search_limit)
+    trace_log(
+        config,
+        "search_start",
+        query_text=query_text,
+        collection=config.collection_name,
+        mode=mode,
+        top_k=config.top_k,
+        prefetch_limit=search_limit,
+        retrieval_limit=retrieval_limit,
+        rerank=config.rerank,
+        reranker_model=config.reranker_model_name if config.rerank else None,
+        reranker_backend="jina" if config.rerank and config.use_jina_reranker else ("cross_encoder" if config.rerank else None),
+        filters=summarize_filters(config),
+    )
     dense_vector = None
     sparse_vector = None
 
@@ -170,7 +254,9 @@ def search_qdrant(
         )
         results = fuse_ranked_points(dense_hits=dense_hits, sparse_hits=sparse_hits, limit=retrieval_limit)
 
+    trace_search_results(config, "search_raw_results", results, retrieval_limit=retrieval_limit)
     results = maybe_rerank_results(config, query_text, results, reranker=reranker)
+    trace_search_results(config, "search_final_results", results, top_k=config.top_k)
 
     return {
         "collection_name": config.collection_name,
@@ -182,10 +268,12 @@ def search_qdrant(
         "answer_article_limit": config.answer_article_limit,
         "exclude_local_documents": config.exclude_local_documents,
         "require_article": config.require_article,
+        "trace_search": config.trace_search,
         "used_precomputed_dense_vector": config.query_vector is not None,
         "rerank": config.rerank,
         "reranker_model": config.reranker_model_name if config.rerank else None,
-        "reranker_max_length": config.reranker_max_length if config.rerank else None,
+        "reranker_backend": "jina" if config.rerank and config.use_jina_reranker else ("cross_encoder" if config.rerank else None),
+        "reranker_max_length": None if config.rerank and config.use_jina_reranker else (config.reranker_max_length if config.rerank else None),
         "rerank_threshold": config.rerank_threshold if config.rerank else None,
         "filters": summarize_filters(config),
         "results": results,
@@ -199,7 +287,7 @@ def search_qdrant_batch(
     query_vectors: list[list[float]] | None = None,
     dense_model: Any | None = None,
     sparse_model: Any | None = None,
-    reranker: tuple[Any, Any] | None = None,
+    reranker: Any | None = None,
     client: Any | None = None,
     models: Any | None = None,
     progress_every: int = 0,
@@ -237,7 +325,7 @@ def search_qdrant_batch(
     if mode in {"bm25", "hybrid"} and sparse_model is None:
         sparse_model = _load_sparse_model(config.sparse_model_name, config.model_cache_dir)
     if config.rerank and reranker is None:
-        reranker = load_reranker(config.reranker_model_name, config.model_cache_dir)
+        reranker = load_reranker(config.reranker_model_name, config.model_cache_dir, use_jina_reranker=config.use_jina_reranker)
     if (
         mode == "dense"
         and pending_vectors is not None
@@ -324,7 +412,7 @@ def search_qdrant_dense_batch(
     query_vectors: list[list[float]],
     client: Any,
     models: Any,
-    reranker: tuple[Any, Any] | None = None,
+    reranker: Any | None = None,
     progress_every: int = 0,
     query_batch_size: int = 64,
     checkpoint_path: Path | None = None,
@@ -366,10 +454,12 @@ def search_qdrant_dense_batch(
                 "answer_article_limit": config.answer_article_limit,
                 "exclude_local_documents": config.exclude_local_documents,
                 "require_article": config.require_article,
+                "trace_search": config.trace_search,
                 "used_precomputed_dense_vector": True,
                 "rerank": config.rerank,
                 "reranker_model": config.reranker_model_name if config.rerank else None,
-                "reranker_max_length": config.reranker_max_length if config.rerank else None,
+                "reranker_backend": "jina" if config.rerank and config.use_jina_reranker else ("cross_encoder" if config.rerank else None),
+                "reranker_max_length": None if config.rerank and config.use_jina_reranker else (config.reranker_max_length if config.rerank else None),
                 "rerank_threshold": config.rerank_threshold if config.rerank else None,
                 "filters": summarize_filters(config),
                 "results": maybe_rerank_results(
@@ -377,6 +467,7 @@ def search_qdrant_dense_batch(
                     question["question"],
                     ranked_points_to_results(_response_points(response), source="dense"),
                     reranker=reranker,
+                    query_id=question["id"],
                 ),
             }
             row = format_competition_row(question, result)
@@ -397,7 +488,7 @@ def search_qdrant_sparse_or_hybrid_batch(
     sparse_vectors: list[Any],
     client: Any,
     models: Any,
-    reranker: tuple[Any, Any] | None = None,
+    reranker: Any | None = None,
     progress_every: int = 0,
     query_batch_size: int = 64,
     checkpoint_path: Path | None = None,
@@ -460,10 +551,12 @@ def search_qdrant_sparse_or_hybrid_batch(
                 "answer_article_limit": config.answer_article_limit,
                 "exclude_local_documents": config.exclude_local_documents,
                 "require_article": config.require_article,
+                "trace_search": config.trace_search,
                 "used_precomputed_dense_vector": query_vectors is not None,
                 "rerank": config.rerank,
                 "reranker_model": config.reranker_model_name if config.rerank else None,
-                "reranker_max_length": config.reranker_max_length if config.rerank else None,
+                "reranker_backend": "jina" if config.rerank and config.use_jina_reranker else ("cross_encoder" if config.rerank else None),
+                "reranker_max_length": None if config.rerank and config.use_jina_reranker else (config.reranker_max_length if config.rerank else None),
                 "rerank_threshold": config.rerank_threshold if config.rerank else None,
                 "filters": summarize_filters(config),
                 "results": maybe_rerank_results(
@@ -474,6 +567,7 @@ def search_qdrant_sparse_or_hybrid_batch(
                         source="sparse" if mode == "bm25" else "hybrid",
                     ),
                     reranker=reranker,
+                    query_id=question["id"],
                 ),
             }
             row = format_competition_row(question, result)
@@ -587,10 +681,12 @@ def empty_search_result(config: QdrantSearchConfig, query_text: str, mode: str) 
         "answer_article_limit": config.answer_article_limit,
         "exclude_local_documents": config.exclude_local_documents,
         "require_article": config.require_article,
+        "trace_search": config.trace_search,
         "used_precomputed_dense_vector": config.query_vector is not None,
         "rerank": config.rerank,
         "reranker_model": config.reranker_model_name if config.rerank else None,
-        "reranker_max_length": config.reranker_max_length if config.rerank else None,
+        "reranker_backend": "jina" if config.rerank and config.use_jina_reranker else ("cross_encoder" if config.rerank else None),
+        "reranker_max_length": None if config.rerank and config.use_jina_reranker else (config.reranker_max_length if config.rerank else None),
         "rerank_threshold": config.rerank_threshold if config.rerank else None,
         "filters": summarize_filters(config),
         "results": [],
@@ -740,21 +836,56 @@ def maybe_rerank_results(
     query_text: str,
     results: list[dict[str, Any]],
     *,
-    reranker: tuple[Any, Any] | None = None,
+    reranker: Any | None = None,
+    query_id: Any | None = None,
 ) -> list[dict[str, Any]]:
+    raw_count = len(results)
+    trace_search_results(config, "rerank_input_raw", results, query_id=query_id, query_text=query_text)
     results = filter_eligible_results(config, results)
+    trace_search_results(
+        config,
+        "rerank_input_eligible",
+        results,
+        query_id=query_id,
+        query_text=query_text,
+        raw_count=raw_count,
+        filtered_out=raw_count - len(results),
+    )
     if not config.rerank:
-        return rank_output_results(results, config.top_k)
+        output = rank_output_results(results, config.top_k)
+        trace_search_results(config, "rerank_skipped_output", output, query_id=query_id, top_k=config.top_k)
+        return output
     if not results:
+        trace_log(
+            config,
+            "rerank_empty",
+            query_id=query_id,
+            query_text=query_text,
+            raw_count=raw_count,
+            filtered_out=raw_count,
+        )
         return []
     if reranker is None:
-        reranker = load_reranker(config.reranker_model_name, config.model_cache_dir)
-    tokenizer, model = reranker
-    pairs = [[query_text, result_text_for_reranking(item)] for item in results]
-    scores = score_rerank_pairs(
-        tokenizer=tokenizer,
-        model=model,
-        pairs=pairs,
+        reranker = load_reranker(
+            config.reranker_model_name,
+            config.model_cache_dir,
+            use_jina_reranker=config.use_jina_reranker,
+        )
+    trace_log(
+        config,
+        "rerank_start",
+        query_id=query_id,
+        query_text=query_text,
+        candidate_count=len(results),
+        backend=reranker.get("backend") if isinstance(reranker, dict) else None,
+        model=config.reranker_model_name,
+        max_length=None if config.use_jina_reranker else config.reranker_max_length,
+    )
+    documents = [result_text_for_reranking(item) for item in results]
+    scores = score_rerank_documents(
+        query_text=query_text,
+        documents=documents,
+        reranker=reranker,
         max_length=config.reranker_max_length,
     )
     reranked = []
@@ -780,14 +911,47 @@ def maybe_rerank_results(
     for rank, item in enumerate(reranked, start=1):
         item["rank"] = rank
         item["rerank_rank"] = rank
-    return reranked[: config.top_k]
+    output = reranked[: config.top_k]
+    trace_search_results(
+        config,
+        "rerank_output",
+        output,
+        query_id=query_id,
+        query_text=query_text,
+        scored_count=len(reranked),
+        threshold=config.rerank_threshold,
+    )
+    return output
 
 
-def load_reranker(model_name: str, cache_dir: Path | None) -> tuple[Any, Any]:
+def load_reranker(
+    model_name: str,
+    cache_dir: Path | None,
+    *,
+    use_jina_reranker: bool = False,
+) -> dict[str, Any]:
     try:
-        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        from transformers import AutoModel, AutoModelForSequenceClassification, AutoTokenizer
     except ImportError as exc:
         raise RuntimeError("transformers is required for reranking. Install the search extra.") from exc
+
+    kwargs: dict[str, Any] = {"cache_dir": str(cache_dir)} if cache_dir else {}
+    if use_jina_reranker and model_name == DEFAULT_RERANKER_MODEL:
+        model_name = DEFAULT_JINA_RERANKER_MODEL
+    if use_jina_reranker:
+        model = AutoModel.from_pretrained(
+            model_name,
+            dtype="auto",
+            trust_remote_code=True,
+            **kwargs,
+        )
+        if hasattr(model, "eval"):
+            model.eval()
+        device = preferred_torch_device()
+        if device and hasattr(model, "to"):
+            model.to(device)
+        return {"backend": "jina", "model": model}
+
     try:
         import sentencepiece  # noqa: F401
     except ImportError as exc:
@@ -796,7 +960,6 @@ def load_reranker(model_name: str, cache_dir: Path | None) -> tuple[Any, Any]:
             "Run `uv sync --extra search` or install `sentencepiece` in the current environment."
         ) from exc
 
-    kwargs: dict[str, Any] = {"cache_dir": str(cache_dir)} if cache_dir else {}
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False, **kwargs)
     model = AutoModelForSequenceClassification.from_pretrained(model_name, **kwargs)
     if hasattr(model, "eval"):
@@ -804,7 +967,67 @@ def load_reranker(model_name: str, cache_dir: Path | None) -> tuple[Any, Any]:
     device = preferred_torch_device()
     if device and hasattr(model, "to"):
         model.to(device)
-    return tokenizer, model
+    return {"backend": "cross_encoder", "tokenizer": tokenizer, "model": model}
+
+
+def score_rerank_documents(
+    *,
+    query_text: str,
+    documents: list[str],
+    reranker: dict[str, Any],
+    max_length: int,
+) -> list[float]:
+    if reranker.get("backend") == "jina":
+        return score_jina_rerank_documents(reranker["model"], query_text, documents)
+    pairs = [[query_text, document] for document in documents]
+    return score_rerank_pairs(
+        tokenizer=reranker["tokenizer"],
+        model=reranker["model"],
+        pairs=pairs,
+        max_length=max_length,
+    )
+
+
+def score_jina_rerank_documents(model: Any, query_text: str, documents: list[str]) -> list[float]:
+    if not documents:
+        return []
+    results = model.rerank(query_text, documents)
+    scores = [0.0] * len(documents)
+    used: set[int] = set()
+    for fallback_index, result in enumerate(results):
+        if not isinstance(result, dict):
+            continue
+        raw_score = result.get("relevance_score", result.get("score", 0.0))
+        index = first_jina_result_index(result)
+        if index is None:
+            index = first_unused_document_index(documents, result.get("document"), used)
+        if index is None and fallback_index < len(documents) and fallback_index not in used:
+            index = fallback_index
+        if index is None or index in used or index >= len(documents):
+            continue
+        scores[index] = float(raw_score)
+        used.add(index)
+    return scores
+
+
+def first_jina_result_index(result: dict[str, Any]) -> int | None:
+    for key in ("index", "corpus_id", "doc_id", "document_index"):
+        value = result.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
+
+
+def first_unused_document_index(documents: list[str], document: Any, used: set[int]) -> int | None:
+    if document is None:
+        return None
+    text = str(document)
+    for index, candidate in enumerate(documents):
+        if index not in used and candidate == text:
+            return index
+    return None
 
 
 def score_rerank_pairs(tokenizer: Any, model: Any, pairs: list[list[str]], max_length: int) -> list[float]:
@@ -1011,13 +1234,15 @@ def format_competition_row(question: dict[str, Any], result: dict[str, Any]) -> 
                 ):
                     answer_articles.append(answer_article)
 
-    return {
+    row = {
         "id": question["id"],
         "question": question["question"],
         "answer": build_retrieval_only_answer(answer_articles),
         "relevant_docs": relevant_docs,
         "relevant_articles": relevant_articles,
     }
+    trace_submission_row(result, row)
+    return row
 
 
 def payload_to_competition_docs(payload: dict[str, Any], doc_title_format: str = "type1") -> list[str]:
