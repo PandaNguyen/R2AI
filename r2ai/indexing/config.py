@@ -23,6 +23,8 @@ DEFAULT_ANSWER_ARTICLE_LIMIT: int | None = None
 DEFAULT_RERANKER_MODEL = "AITeamVN/Vietnamese_Reranker"
 DEFAULT_RERANKER_MAX_LENGTH = 2304
 DEFAULT_RERANK_THRESHOLD: float | None = None
+DEFAULT_EXCLUDE_LOCAL_DOCUMENTS = True
+DEFAULT_REQUIRE_ARTICLE = True
 DEFAULT_MODEL_CACHE_DIR = Path.cwd() / ".cache" 
 DEFAULT_HNSW_M: int | None = None
 DEFAULT_HNSW_EF_CONSTRUCT: int | None = None
@@ -115,6 +117,8 @@ class QdrantSearchConfig:
     reranker_model_name: str = DEFAULT_RERANKER_MODEL
     reranker_max_length: int = DEFAULT_RERANKER_MAX_LENGTH
     rerank_threshold: float | None = DEFAULT_RERANK_THRESHOLD
+    exclude_local_documents: bool = DEFAULT_EXCLUDE_LOCAL_DOCUMENTS
+    require_article: bool = DEFAULT_REQUIRE_ARTICLE
     topic_title: str | None = None
     subject_title: str | None = None
     source_law_id: str | None = None
@@ -142,6 +146,8 @@ class QdrantSearchConfig:
         reranker_model_name: str = DEFAULT_RERANKER_MODEL,
         reranker_max_length: int = DEFAULT_RERANKER_MAX_LENGTH,
         rerank_threshold: float | None = DEFAULT_RERANK_THRESHOLD,
+        exclude_local_documents: bool = DEFAULT_EXCLUDE_LOCAL_DOCUMENTS,
+        require_article: bool = DEFAULT_REQUIRE_ARTICLE,
         topic_title: str | None = None,
         subject_title: str | None = None,
         source_law_id: str | None = None,
@@ -175,6 +181,8 @@ class QdrantSearchConfig:
             reranker_model_name=reranker_model_name,
             reranker_max_length=reranker_max_length,
             rerank_threshold=rerank_threshold,
+            exclude_local_documents=exclude_local_documents,
+            require_article=require_article,
             topic_title=topic_title,
             subject_title=subject_title,
             source_law_id=source_law_id,

@@ -15,11 +15,13 @@ from r2ai.indexing.config import (
     DEFAULT_ANSWER_ARTICLE_LIMIT,
     DEFAULT_DENSE_MODEL,
     DEFAULT_DOC_TITLE_FORMAT,
+    DEFAULT_EXCLUDE_LOCAL_DOCUMENTS,
     DEFAULT_HNSW_EF_CONSTRUCT,
     DEFAULT_HNSW_M,
     DEFAULT_PREFETCH_LIMIT,
     DEFAULT_RERANKER_MAX_LENGTH,
     DEFAULT_RERANKER_MODEL,
+    DEFAULT_REQUIRE_ARTICLE,
     DEFAULT_SEARCH_QDRANT_TIMEOUT,
     DEFAULT_SEARCH_MODE,
     DEFAULT_SPARSE_MODEL,
@@ -132,6 +134,20 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--source-article-no", default=None)
     search.add_argument("--citation-confidence", default=None)
     search.add_argument("--topic-number", type=int, default=None)
+    search.add_argument(
+        "--include-local-documents",
+        dest="exclude_local_documents",
+        action="store_false",
+        default=DEFAULT_EXCLUDE_LOCAL_DOCUMENTS,
+        help="Allow province/city/local authority documents in retrieval candidates",
+    )
+    search.add_argument(
+        "--allow-non-article-results",
+        dest="require_article",
+        action="store_false",
+        default=DEFAULT_REQUIRE_ARTICLE,
+        help="Allow candidates that do not resolve to a competition article ref",
+    )
 
     submit = subparsers.add_parser("submit-qdrant", help="Create competition results.json from Qdrant retrieval")
     submit.add_argument("--questions", type=Path, required=True, help="Question file: .json, .jsonl, or .csv")
@@ -174,13 +190,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     submit.add_argument("--limit", type=int, default=None, help="Optional number of questions for smoke tests")
     submit.add_argument("--progress-every", type=int, default=25)
-    submit.add_argument("--qdrant-batch-size", type=int, default=64, help="Batch size for dense .npy Qdrant queries")
+    submit.add_argument("--qdrant-batch-size", type=int, default=50, help="Batch size for dense .npy Qdrant queries")
     submit.add_argument("--topic-title", default=None)
     submit.add_argument("--subject-title", default=None)
     submit.add_argument("--source-law-id", default=None)
     submit.add_argument("--source-article-no", default=None)
     submit.add_argument("--citation-confidence", default=None)
     submit.add_argument("--topic-number", type=int, default=None)
+    submit.add_argument(
+        "--include-local-documents",
+        dest="exclude_local_documents",
+        action="store_false",
+        default=DEFAULT_EXCLUDE_LOCAL_DOCUMENTS,
+        help="Allow province/city/local authority documents in retrieval candidates",
+    )
+    submit.add_argument(
+        "--allow-non-article-results",
+        dest="require_article",
+        action="store_false",
+        default=DEFAULT_REQUIRE_ARTICLE,
+        help="Allow candidates that do not resolve to a competition article ref",
+    )
     return parser
 
 
@@ -273,6 +303,8 @@ def main() -> None:
                 reranker_model_name=args.reranker_model,
                 reranker_max_length=args.reranker_max_length,
                 rerank_threshold=args.rerank_threshold,
+                exclude_local_documents=args.exclude_local_documents,
+                require_article=args.require_article,
                 topic_title=args.topic_title,
                 subject_title=args.subject_title,
                 source_law_id=args.source_law_id,
@@ -312,6 +344,8 @@ def main() -> None:
                 reranker_model_name=args.reranker_model,
                 reranker_max_length=args.reranker_max_length,
                 rerank_threshold=args.rerank_threshold,
+                exclude_local_documents=args.exclude_local_documents,
+                require_article=args.require_article,
                 topic_title=args.topic_title,
                 subject_title=args.subject_title,
                 source_law_id=args.source_law_id,

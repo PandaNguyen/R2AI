@@ -29,6 +29,11 @@ COMPETITION_DOC_TITLE_CODE_PATTERN = re.compile(
     r"^(?P<kind>.+?)\s+số\s+(?P<code>\S+)\s+(?P<title>.+)$",
     re.IGNORECASE,
 )
+COMPETITION_DOC_TITLE_PATH_SEGMENT_PATTERN = re.compile(
+    r"(?:^|[.;])\s*(?:(?:Phần|Chương|Mục|Tiểu mục)\s+[A-ZĐIVXLCDM\d]+(?:\.\d+)*|"
+    r"Phụ lục|Danh mục|Mẫu số)\b",
+    re.IGNORECASE,
+)
 
 
 def normalize_text(value: Any) -> str:
@@ -136,12 +141,14 @@ def extract_article_no(article_title: str) -> tuple[str, str]:
 
 
 def normalize_competition_doc_title(doc_title: str, law_id: str, doc_title_format: str) -> str:
-    doc_title = normalize_text(doc_title)
+    doc_title = strip_competition_doc_title_path(normalize_text(doc_title))
     match = COMPETITION_DOC_TITLE_CODE_PATTERN.match(doc_title)
     if match:
         kind = normalize_text(match.group("kind"))
         code = normalize_text(match.group("code"))
-        title = uppercase_first(normalize_text(match.group("title")))
+        title = strip_repeated_source_type(
+            uppercase_first(strip_competition_doc_title_path(normalize_text(match.group("title")))), kind
+        )
         if doc_title_format == "type2":
             return normalize_text(f"{kind} {code} {title}")
         return normalize_text(f"{kind} {title}")
@@ -150,16 +157,57 @@ def normalize_competition_doc_title(doc_title: str, law_id: str, doc_title_forma
     if law_id and law_id in doc_title:
         prefix, title = doc_title.split(law_id, maxsplit=1)
         kind = normalize_text(prefix.strip(" ,.;:-"))
-        title = uppercase_first(normalize_text(title.strip(" ,.;:-")))
+        title = strip_repeated_source_type(
+            uppercase_first(strip_competition_doc_title_path(normalize_text(title.strip(" ,.;:-")))), kind
+        )
         if kind and title:
             if doc_title_format == "type2":
                 return normalize_text(f"{kind} {law_id} {title}")
             return normalize_text(f"{kind} {title}")
+        if title:
+            source_type, source_title = split_source_type(title)
+            if source_type and source_title:
+                if doc_title_format == "type2":
+                    return normalize_text(f"{source_type} {law_id} {uppercase_first(source_title)}")
+                return normalize_text(f"{source_type} {uppercase_first(source_title)}")
+            if doc_title_format == "type1":
+                return title
     if doc_title_format == "type2" and law_id and law_id not in doc_title:
+        source_type, source_title = split_source_type(doc_title)
+        if source_type and source_title:
+            return normalize_text(f"{source_type} {law_id} {uppercase_first(source_title)}")
         first_word, rest = split_first_word(doc_title)
         if rest:
             return normalize_text(f"{first_word} {law_id} {uppercase_first(rest)}")
     return doc_title
+
+
+def strip_competition_doc_title_path(doc_title: str) -> str:
+    match = COMPETITION_DOC_TITLE_PATH_SEGMENT_PATTERN.search(doc_title)
+    cut_at = match.start() if match else -1
+    pipe_at = doc_title.find(" | ")
+    if pipe_at >= 0 and (cut_at < 0 or pipe_at < cut_at):
+        cut_at = pipe_at
+    if cut_at < 0:
+        return doc_title
+    return normalize_text(doc_title[:cut_at].strip(" .;:-|"))
+
+
+def split_source_type(doc_title: str) -> tuple[str, str]:
+    match = LEGAL_SOURCE_TYPE_PATTERN.match(doc_title)
+    if not match:
+        return "", doc_title
+    source_type = normalize_text(match.group(0))
+    source_title = normalize_text(doc_title[match.end() :].strip(" ,.;:-"))
+    return source_type, source_title
+
+
+def strip_repeated_source_type(title: str, source_type: str) -> str:
+    title = normalize_text(title)
+    source_type = normalize_text(source_type)
+    if source_type and title.lower().startswith(source_type.lower() + " "):
+        return normalize_text(title[len(source_type) :].strip(" ,.;:-"))
+    return title
 
 
 def uppercase_first(text: str) -> str:

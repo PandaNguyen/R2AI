@@ -27,7 +27,9 @@ from r2ai.cli import load_env_file
 from r2ai.indexing.config import (
     DEFAULT_COLLECTION,
     DEFAULT_DOC_TITLE_FORMAT,
+    DEFAULT_EXCLUDE_LOCAL_DOCUMENTS,
     DEFAULT_PREFETCH_LIMIT,
+    DEFAULT_REQUIRE_ARTICLE,
     DEFAULT_SEARCH_QDRANT_TIMEOUT,
     QdrantSearchConfig,
 )
@@ -144,6 +146,18 @@ def parse_args() -> argparse.Namespace:
         help="JSONL checkpoint for completed question predictions; defaults to <output>.checkpoint.jsonl",
     )
     parser.add_argument("--no-resume", action="store_true")
+    parser.add_argument(
+        "--include-local-documents",
+        dest="exclude_local_documents",
+        action="store_false",
+        default=DEFAULT_EXCLUDE_LOCAL_DOCUMENTS,
+    )
+    parser.add_argument(
+        "--allow-non-article-results",
+        dest="require_article",
+        action="store_false",
+        default=DEFAULT_REQUIRE_ARTICLE,
+    )
     return parser.parse_args()
 
 
@@ -189,6 +203,8 @@ def main() -> None:
         qdrant_timeout=args.qdrant_timeout,
         doc_title_format=args.doc_title_format,
         answer_article_limit=args.answer_article_limit,
+        exclude_local_documents=args.exclude_local_documents,
+        require_article=args.require_article,
     )
 
     rows_by_id: dict[str, dict[str, Any]] = dict(completed_rows)
@@ -246,6 +262,8 @@ def main() -> None:
         result = {
             "doc_title_format": args.doc_title_format,
             "answer_article_limit": args.answer_article_limit,
+            "exclude_local_documents": args.exclude_local_documents,
+            "require_article": args.require_article,
             "results": rerank_candidates(candidates, limit=args.top_k),
         }
         row = format_competition_row(question, result)

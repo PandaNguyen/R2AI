@@ -26,6 +26,35 @@ DOC_TITLE_CODE_PATTERN = re.compile(
     r"^(?P<kind>.+?)\s+số\s+(?P<code>\S+)\s+(?P<title>.+)$",
     re.IGNORECASE,
 )
+DOC_TITLE_PATH_SEGMENT_PATTERN = re.compile(
+    r"(?:^|[.;])\s*(?:(?:Phần|Chương|Mục|Tiểu mục)\s+[A-ZĐIVXLCDM\d]+(?:\.\d+)*|"
+    r"Phụ lục|Danh mục|Mẫu số)\b",
+    re.IGNORECASE,
+)
+DOC_TITLE_SOURCE_TYPE_PATTERN = re.compile(
+    r"^(?:Bộ luật|Luật|Pháp lệnh|Nghị quyết|Nghị định|Thông tư liên tịch|Thông tư|Quyết định|"
+    r"Văn bản hợp nhất)\b",
+    re.IGNORECASE,
+)
+LOCAL_LAW_ID_PATTERN = re.compile(
+    r"/(?:NQ-HĐND|QĐ-UBND|QĐ-HĐND|CT-UBND|QĐ-TTPVHCC|QĐ-S[A-ZĐ]+)\b",
+    re.IGNORECASE,
+)
+CENTRAL_LAW_ID_PATTERN = re.compile(
+    r"/(?:QH\d*|UBTVQH\d*|NĐ-CP|TT-[A-ZĐ]+|TTLT-[A-ZĐ]+|VBHN-[A-ZĐ]+|"
+    r"QĐ-(?:TTG|BTC|BCT|BYT|BGDĐT|BLĐTBXH|BKHĐT|BNNPTNT|BTNMT|BTP|BXD|BCA|"
+    r"BQP|BVHTTDL|BKHCN|NHNN|BHXH|VPCP))\b",
+    re.IGNORECASE,
+)
+LOCAL_AUTHORITY_PATTERN = re.compile(
+    r"\b(?:ủy ban nhân dân|ubnd|hội đồng nhân dân|hđnd|sở [a-zà-ỹ]|"
+    r"trung tâm phục vụ hành chính công|cấp tỉnh|cấp huyện|cấp xã)\b",
+    re.IGNORECASE,
+)
+LOCAL_TITLE_PATTERN = re.compile(
+    r"(?:\b(?:tỉnh|thành phố|tp\.)\s+[A-ZÀ-ỸĐ]|\b(?:do|của)\s+(?:ủy ban nhân dân|ubnd|hội đồng nhân dân|hđnd|sở ))",
+    re.IGNORECASE,
+)
 OutputFormat = Literal["json", "jsonl"]
 
 
@@ -52,8 +81,8 @@ def search_qdrant(
         raise ValueError("query_text must not be empty.")
 
     query_filter = build_qdrant_filter(config, models)
-    search_limit = max(config.top_k, config.prefetch_limit)
-    retrieval_limit = search_limit if config.rerank else config.top_k
+    search_limit = search_limit_for_config(config)
+    retrieval_limit = retrieval_limit_for_config(config, search_limit)
     dense_vector = None
     sparse_vector = None
 
@@ -151,6 +180,8 @@ def search_qdrant(
         "prefetch_limit": search_limit,
         "doc_title_format": config.doc_title_format,
         "answer_article_limit": config.answer_article_limit,
+        "exclude_local_documents": config.exclude_local_documents,
+        "require_article": config.require_article,
         "used_precomputed_dense_vector": config.query_vector is not None,
         "rerank": config.rerank,
         "reranker_model": config.reranker_model_name if config.rerank else None,
@@ -299,8 +330,8 @@ def search_qdrant_dense_batch(
     checkpoint_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     query_filter = build_qdrant_filter(config, models)
-    search_limit = max(config.top_k, config.prefetch_limit)
-    retrieval_limit = search_limit if config.rerank else config.top_k
+    search_limit = search_limit_for_config(config)
+    retrieval_limit = retrieval_limit_for_config(config, search_limit)
     rows = []
     started_at = time.monotonic()
     total = len(questions)
@@ -330,9 +361,11 @@ def search_qdrant_dense_batch(
                 "query_text": question["question"],
                 "search_mode": "dense",
                 "top_k": config.top_k,
-                "prefetch_limit": max(config.top_k, config.prefetch_limit),
+                "prefetch_limit": search_limit_for_config(config),
                 "doc_title_format": config.doc_title_format,
                 "answer_article_limit": config.answer_article_limit,
+                "exclude_local_documents": config.exclude_local_documents,
+                "require_article": config.require_article,
                 "used_precomputed_dense_vector": True,
                 "rerank": config.rerank,
                 "reranker_model": config.reranker_model_name if config.rerank else None,
@@ -371,8 +404,8 @@ def search_qdrant_sparse_or_hybrid_batch(
 ) -> list[dict[str, Any]]:
     mode = normalize_search_mode(config.search_mode)
     query_filter = build_qdrant_filter(config, models)
-    search_limit = max(config.top_k, config.prefetch_limit)
-    retrieval_limit = search_limit if config.rerank else config.top_k
+    search_limit = search_limit_for_config(config)
+    retrieval_limit = retrieval_limit_for_config(config, search_limit)
     rows = []
     started_at = time.monotonic()
     total = len(questions)
@@ -425,6 +458,8 @@ def search_qdrant_sparse_or_hybrid_batch(
                 "prefetch_limit": search_limit,
                 "doc_title_format": config.doc_title_format,
                 "answer_article_limit": config.answer_article_limit,
+                "exclude_local_documents": config.exclude_local_documents,
+                "require_article": config.require_article,
                 "used_precomputed_dense_vector": query_vectors is not None,
                 "rerank": config.rerank,
                 "reranker_model": config.reranker_model_name if config.rerank else None,
@@ -547,9 +582,11 @@ def empty_search_result(config: QdrantSearchConfig, query_text: str, mode: str) 
         "query_text": query_text,
         "search_mode": mode,
         "top_k": config.top_k,
-        "prefetch_limit": max(config.top_k, config.prefetch_limit),
+        "prefetch_limit": search_limit_for_config(config),
         "doc_title_format": config.doc_title_format,
         "answer_article_limit": config.answer_article_limit,
+        "exclude_local_documents": config.exclude_local_documents,
+        "require_article": config.require_article,
         "used_precomputed_dense_vector": config.query_vector is not None,
         "rerank": config.rerank,
         "reranker_model": config.reranker_model_name if config.rerank else None,
@@ -598,6 +635,17 @@ def sparse_query_vectors(query_texts: list[str], sparse_model: Any, models: Any)
             )
         )
     return vectors
+
+
+def search_limit_for_config(config: QdrantSearchConfig) -> int:
+    return max(config.top_k, config.prefetch_limit)
+
+
+def retrieval_limit_for_config(config: QdrantSearchConfig, search_limit: int | None = None) -> int:
+    search_limit = search_limit if search_limit is not None else search_limit_for_config(config)
+    if config.rerank or config.exclude_local_documents or config.require_article:
+        return search_limit
+    return config.top_k
 
 
 def build_qdrant_filter(config: QdrantSearchConfig, models: Any) -> Any | None:
@@ -665,6 +713,28 @@ def fuse_ranked_points(dense_hits: list[Any], sparse_hits: list[Any], limit: int
     return ranked[:limit]
 
 
+def filter_eligible_results(config: QdrantSearchConfig, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in results
+        if payload_is_submission_eligible(
+            item.get("payload") or {},
+            doc_title_format=config.doc_title_format,
+            exclude_local_documents=config.exclude_local_documents,
+            require_article=config.require_article,
+        )
+    ]
+
+
+def rank_output_results(results: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    output = []
+    for rank, item in enumerate(results[:limit], start=1):
+        ranked_item = dict(item)
+        ranked_item["rank"] = rank
+        output.append(ranked_item)
+    return output
+
+
 def maybe_rerank_results(
     config: QdrantSearchConfig,
     query_text: str,
@@ -672,8 +742,9 @@ def maybe_rerank_results(
     *,
     reranker: tuple[Any, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    results = filter_eligible_results(config, results)
     if not config.rerank:
-        return results[: config.top_k]
+        return rank_output_results(results, config.top_k)
     if not results:
         return []
     if reranker is None:
@@ -811,6 +882,101 @@ def ranked_points_to_results(hits: list[Any], source: str) -> list[dict[str, Any
     return results
 
 
+def payload_is_submission_eligible(
+    payload: dict[str, Any],
+    *,
+    doc_title_format: str = "type1",
+    exclude_local_documents: bool = True,
+    require_article: bool = True,
+) -> bool:
+    if exclude_local_documents and is_local_document_payload(payload):
+        return False
+    if require_article and not payload_to_competition_articles(payload, doc_title_format=doc_title_format):
+        return False
+    return True
+
+
+def is_local_document_payload(payload: dict[str, Any]) -> bool:
+    law_ids = payload_law_ids(payload)
+    if any(LOCAL_LAW_ID_PATTERN.search(law_id) for law_id in law_ids):
+        return True
+    if any(CENTRAL_LAW_ID_PATTERN.search(law_id) for law_id in law_ids):
+        return False
+
+    authority_text = normalize_spaces(
+        " ".join(
+            part
+            for key in ("issuing_authority", "source_authority", "authority")
+            for part in as_text_list(payload.get(key))
+        )
+    )
+    if authority_text and LOCAL_AUTHORITY_PATTERN.search(authority_text):
+        return True
+
+    title_text = normalize_spaces(
+        " ".join(
+            part
+            for key in (
+                "title",
+                "document_title",
+                "source_document_title",
+                "source_note_text",
+                "source_doc_title_candidates",
+            )
+            for part in as_text_list(payload.get(key))
+        )
+    )
+    return bool(title_text and (LOCAL_AUTHORITY_PATTERN.search(title_text) or LOCAL_TITLE_PATTERN.search(title_text)))
+
+
+def payload_output_law_ids(payload: dict[str, Any]) -> list[str]:
+    law_ids: list[str] = []
+    for key in (
+        "competition_law_id",
+        "source_document_number",
+        "document_number",
+        "law_id",
+        "source_law_id_candidates",
+    ):
+        law_ids.extend(as_text_list(payload.get(key)))
+    output = []
+    seen = set()
+    for law_id in law_ids:
+        normalized = normalize_law_id_for_output(law_id)
+        lookup = normalized.upper()
+        if normalized and lookup not in seen:
+            seen.add(lookup)
+            output.append(normalized)
+    return output
+
+
+def normalize_law_id_for_output(law_id: str) -> str:
+    normalized = normalize_spaces(law_id)
+    normalized = re.sub(r"ND-CP\b", "NĐ-CP", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"QD-", "QĐ-", normalized, flags=re.IGNORECASE)
+    return normalized
+
+
+def payload_law_ids(payload: dict[str, Any]) -> list[str]:
+    law_ids: list[str] = []
+    for key in (
+        "competition_law_id",
+        "source_document_number",
+        "document_number",
+        "law_id",
+        "source_law_id_candidates",
+    ):
+        law_ids.extend(as_text_list(payload.get(key)))
+    output = []
+    seen = set()
+    for law_id in law_ids:
+        normalized = law_id.strip().upper().replace("ND-CP", "NĐ-CP").replace("QD-", "QĐ-")
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            output.append(normalized)
+    return output
+
+
 def format_competition_row(question: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     relevant_docs: list[str] = []
     relevant_articles: list[str] = []
@@ -819,9 +985,18 @@ def format_competition_row(question: dict[str, Any], result: dict[str, Any]) -> 
     seen_articles: set[str] = set()
     doc_title_format = result.get("doc_title_format", "type1")
     answer_article_limit = result.get("answer_article_limit")
+    exclude_local_documents = result.get("exclude_local_documents", True)
+    require_article = result.get("require_article", True)
 
     for item in result["results"]:
         payload = item.get("payload") or {}
+        if not payload_is_submission_eligible(
+            payload,
+            doc_title_format=doc_title_format,
+            exclude_local_documents=exclude_local_documents,
+            require_article=require_article,
+        ):
+            continue
         for doc in payload_to_competition_docs(payload, doc_title_format=doc_title_format):
             if doc not in seen_docs:
                 seen_docs.add(doc)
@@ -867,21 +1042,37 @@ def payload_to_primary_competition_ref(
     explicit_doc_title = str(payload.get(f"competition_doc_title_{doc_title_format}") or "").strip()
     explicit_article_no = str(payload.get("competition_article_no") or "").strip()
     if explicit_law_id and explicit_doc_title:
-        return explicit_law_id, explicit_doc_title, explicit_article_no
+        doc_title = normalize_competition_doc_title(explicit_doc_title, explicit_law_id, doc_title_format)
+        return explicit_law_id, doc_title, explicit_article_no
 
     header = retrieval_header(payload)
-    law_ids = as_text_list(payload.get("source_law_id_candidates"))
-    law_id = explicit_law_id or first_header_law_id(header, law_ids)
-    article_no = explicit_article_no or first_article_no(header)
-    if not article_no:
-        article_no = first_article_no(" ".join(as_text_list(payload.get("source_article_no_candidates"))))
-    if not article_no:
-        article_no = first_article_no(str(payload.get("article_title", "")))
-    doc_title = explicit_doc_title or doc_title_from_header(header, article_no)
-    if not doc_title:
-        doc_title = first_reasonable_doc_title(payload)
+    law_ids = payload_output_law_ids(payload)
+    law_id = explicit_law_id or first_payload_law_id(payload) or first_header_law_id(header, law_ids)
+    article_no = explicit_article_no or first_payload_article_no(payload) or first_article_no(header)
+    doc_title = explicit_doc_title or first_reasonable_doc_title(payload) or doc_title_from_header(header, article_no)
     doc_title = normalize_competition_doc_title(doc_title, law_id, doc_title_format)
     return law_id, doc_title, article_no
+
+
+def first_payload_law_id(payload: dict[str, Any]) -> str:
+    law_ids = payload_output_law_ids(payload)
+    return law_ids[0] if law_ids else ""
+
+
+def first_payload_article_no(payload: dict[str, Any]) -> str:
+    for key in (
+        "competition_article_no",
+        "article_no_normalized",
+        "article_no",
+        "source_article_no",
+        "source_article_no_candidates",
+        "content_tree_path",
+        "article_title",
+    ):
+        article_no = first_article_no(" ".join(as_text_list(payload.get(key))))
+        if article_no:
+            return article_no
+    return ""
 
 
 def retrieval_header(payload: dict[str, Any]) -> str:
@@ -912,19 +1103,29 @@ def doc_title_from_header(header: str, article_no: str) -> str:
 
 
 def first_reasonable_doc_title(payload: dict[str, Any]) -> str:
-    for title in as_text_list(payload.get("source_doc_title_candidates")):
-        if not ARTICLE_NO_PATTERN.fullmatch(title) and len(title) > 12:
-            return title.strip("() ")
+    for key in (
+        "source_doc_title_candidates",
+        "source_document_title",
+        "document_title",
+        "title",
+        "source_note_text",
+    ):
+        for title in as_text_list(payload.get(key)):
+            title = title.strip("() ")
+            if not ARTICLE_NO_PATTERN.fullmatch(title) and len(title) > 12:
+                return title
     return ""
 
 
 def normalize_competition_doc_title(doc_title: str, law_id: str, doc_title_format: str) -> str:
-    doc_title = normalize_spaces(doc_title)
+    doc_title = strip_doc_title_path(normalize_spaces(doc_title))
     match = DOC_TITLE_CODE_PATTERN.match(doc_title)
     if match:
         kind = normalize_spaces(match.group("kind"))
         code = normalize_spaces(match.group("code"))
-        title = uppercase_first(normalize_spaces(match.group("title")))
+        title = strip_repeated_source_type(
+            uppercase_first(strip_doc_title_path(normalize_spaces(match.group("title")))), kind
+        )
         if doc_title_format == "type2":
             return normalize_spaces(f"{kind} {code} {title}")
         return normalize_spaces(f"{kind} {title}")
@@ -933,20 +1134,61 @@ def normalize_competition_doc_title(doc_title: str, law_id: str, doc_title_forma
     if law_id and law_id in doc_title:
         prefix, title = doc_title.split(law_id, maxsplit=1)
         kind = normalize_spaces(prefix.strip(" ,.;:-"))
-        title = uppercase_first(normalize_spaces(title.strip(" ,.;:-")))
+        title = strip_repeated_source_type(
+            uppercase_first(strip_doc_title_path(normalize_spaces(title.strip(" ,.;:-")))), kind
+        )
         if kind and title:
             if doc_title_format == "type2":
                 return normalize_spaces(f"{kind} {law_id} {title}")
             return normalize_spaces(f"{kind} {title}")
+        if title:
+            source_type, source_title = split_source_type(title)
+            if source_type and source_title:
+                if doc_title_format == "type2":
+                    return normalize_spaces(f"{source_type} {law_id} {uppercase_first(source_title)}")
+                return normalize_spaces(f"{source_type} {uppercase_first(source_title)}")
+            if doc_title_format == "type1":
+                return title
     if doc_title_format == "type2" and law_id and law_id not in doc_title:
+        source_type, source_title = split_source_type(doc_title)
+        if source_type and source_title:
+            return normalize_spaces(f"{source_type} {law_id} {uppercase_first(source_title)}")
         first_word, rest = split_first_word(doc_title)
         if rest:
             return normalize_spaces(f"{first_word} {law_id} {uppercase_first(rest)}")
     return doc_title
 
 
+def strip_doc_title_path(doc_title: str) -> str:
+    match = DOC_TITLE_PATH_SEGMENT_PATTERN.search(doc_title)
+    cut_at = match.start() if match else -1
+    pipe_at = doc_title.find(" | ")
+    if pipe_at >= 0 and (cut_at < 0 or pipe_at < cut_at):
+        cut_at = pipe_at
+    if cut_at < 0:
+        return doc_title
+    return normalize_spaces(doc_title[:cut_at].strip(" .;:-|"))
+
+
+def split_source_type(doc_title: str) -> tuple[str, str]:
+    match = DOC_TITLE_SOURCE_TYPE_PATTERN.match(doc_title)
+    if not match:
+        return "", doc_title
+    source_type = normalize_spaces(match.group(0))
+    source_title = normalize_spaces(doc_title[match.end() :].strip(" ,.;:-"))
+    return source_type, source_title
+
+
 def normalize_spaces(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def strip_repeated_source_type(title: str, source_type: str) -> str:
+    title = normalize_spaces(title)
+    source_type = normalize_spaces(source_type)
+    if source_type and title.lower().startswith(source_type.lower() + " "):
+        return normalize_spaces(title[len(source_type) :].strip(" ,.;:-"))
+    return title
 
 
 def uppercase_first(text: str) -> str:
@@ -986,6 +1228,8 @@ def summarize_filters(config: QdrantSearchConfig) -> dict[str, Any]:
         "source_article_no": config.source_article_no,
         "citation_confidence": config.citation_confidence,
         "topic_number": config.topic_number,
+        "exclude_local_documents": config.exclude_local_documents,
+        "require_article": config.require_article,
     }
 
 
