@@ -21,7 +21,7 @@ try:
 except ImportError as exc:  # pragma: no cover - environment guard.
     raise RuntimeError("pyarrow is required. Run: uv sync --extra data") from exc
 
-from build_vld_business_collection import classify_metadata
+from build_vld_business_collection import classify_metadata, effect_status, load_effect_status_by_id, merge_effect_status, normalize_metadata_row
 from build_vld_chunk_preview import build_chunks_for_tree, make_qdrant_preview
 from build_vld_tree_preview import build_tree
 
@@ -41,23 +41,29 @@ def load_business_metadata(
     min_year: int,
     ids_file: Path | None,
     limit: int,
+    effect_metadata_path: Path | None,
 ) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
     allowed_ids = load_ids(ids_file) if ids_file else None
     metadata_path = vld_root / "metadata" / "data-00000-of-00001.parquet"
+    effect_status_by_id = load_effect_status_by_id(effect_metadata_path)
     rows: dict[int, dict[str, Any]] = {}
     total = 0
     kept = 0
     tier_counts: Counter[str] = Counter()
+    excluded_reason_counts: Counter[str] = Counter()
     type_counts: Counter[str] = Counter()
     sector_counts: Counter[str] = Counter()
+    effect_status_counts: Counter[str] = Counter()
 
     for row in iter_parquet_rows(metadata_path):
         total += 1
+        row = normalize_metadata_row(merge_effect_status(row, effect_status_by_id))
         doc_id = int(row["id"])
         if allowed_ids is not None and doc_id not in allowed_ids:
             continue
         keep, tier = classify_metadata(row, min_year=min_year)
         if not keep:
+            excluded_reason_counts[tier] += 1
             continue
         row["_business_scope_tier"] = tier
         rows[doc_id] = row
@@ -66,6 +72,7 @@ def load_business_metadata(
         type_counts[str(row.get("legal_type") or "<missing>").strip()] += 1
         for sector in split_sectors(row.get("legal_sectors")):
             sector_counts[sector] += 1
+        effect_status_counts[effect_status(row) or "<missing>"] += 1
         if limit > 0 and kept >= limit:
             break
 
@@ -73,8 +80,12 @@ def load_business_metadata(
         "total_metadata_rows_scanned": total,
         "kept_documents": len(rows),
         "tier_counts": dict(tier_counts),
+        "excluded_reason_counts": dict(excluded_reason_counts),
+        "effect_metadata_path": str(effect_metadata_path) if effect_metadata_path else "",
+        "effect_metadata_loaded": bool(effect_status_by_id),
         "top_legal_types": dict(type_counts.most_common(25)),
         "top_sectors": dict(sector_counts.most_common(25)),
+        "top_effect_status": dict(effect_status_counts.most_common(25)),
     }
 
 
@@ -96,6 +107,16 @@ def load_ids(path: Path) -> set[int]:
     return ids
 
 
+def is_article_embedding_chunk(chunk: dict[str, Any]) -> bool:
+    return (
+        chunk.get("node_type") == "article"
+        and chunk.get("chunk_type") in {"article_text_chunk", "article_split_chunk", "article_title_chunk"}
+        and bool(chunk.get("article_no_normalized"))
+        and not chunk.get("contains_table")
+        and not chunk.get("appendix")
+    )
+
+
 def build_artifacts(args: argparse.Namespace) -> dict[str, Any]:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     metadata_by_id, metadata_report = load_business_metadata(
@@ -103,6 +124,7 @@ def build_artifacts(args: argparse.Namespace) -> dict[str, Any]:
         min_year=args.min_year,
         ids_file=args.ids_file,
         limit=args.limit,
+        effect_metadata_path=args.effect_metadata_path,
     )
     wanted_ids = set(metadata_by_id)
 
@@ -136,6 +158,8 @@ def build_artifacts(args: argparse.Namespace) -> dict[str, Any]:
         print(f"Resuming VLD build from {resumed_documents} completed document parts", flush=True)
 
     documents_built_this_run = 0
+    non_article_chunks_dropped = 0
+    documents_without_article_chunks = 0
     for parquet_path in sorted((args.vld_root / "content").glob("*.parquet")):
         for content_row in iter_parquet_rows(parquet_path, columns=["id", "content"]):
             doc_id = int(content_row["id"])
@@ -153,6 +177,17 @@ def build_artifacts(args: argparse.Namespace) -> dict[str, Any]:
                     table_rows_per_chunk=args.table_rows_per_chunk,
                     overlap_tokens=args.overlap_tokens,
                 )
+                if args.article_only:
+                    original_chunk_count = len(chunks)
+                    chunks = [chunk for chunk in chunks if is_article_embedding_chunk(chunk)]
+                    non_article_chunks_dropped += original_chunk_count - len(chunks)
+                    if not chunks:
+                        documents_without_article_chunks += 1
+                        continue
+                    chunk_count = len(chunks)
+                    for chunk_index, chunk in enumerate(chunks):
+                        chunk["chunk_index"] = chunk_index
+                        chunk["chunk_count"] = chunk_count
             except Exception as exc:  # Keep long Kaggle jobs moving.
                 append_jsonl(errors_path, [{"document_id": doc_id, "error": str(exc)}])
                 continue
@@ -195,17 +230,21 @@ def build_artifacts(args: argparse.Namespace) -> dict[str, Any]:
             "min_year": args.min_year,
             "limit": args.limit,
             "ids_file": str(args.ids_file) if args.ids_file else "",
+            "effect_metadata_path": str(args.effect_metadata_path) if args.effect_metadata_path else "",
         },
         "chunking": {
             "tokenizer": "tiktoken/cl100k_base",
             "max_text_tokens": args.max_text_tokens,
             "overlap_tokens": args.overlap_tokens,
             "table_rows_per_chunk": args.table_rows_per_chunk,
+            "article_only": args.article_only,
         },
         "metadata": metadata_report,
         "documents_built": documents_built,
         "documents_built_this_run": documents_built_this_run,
         "documents_resumed_from_checkpoint": resumed_documents,
+        "documents_without_article_chunks": documents_without_article_chunks,
+        "non_article_chunks_dropped": non_article_chunks_dropped,
         "chunk_count": chunk_count,
         "chunk_type_counts": dict(chunk_type_counts),
         "table_chunk_count": table_chunk_count,
@@ -330,7 +369,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-text-tokens", type=int, default=2048)
     parser.add_argument("--overlap-tokens", type=int, default=256)
     parser.add_argument("--table-rows-per-chunk", type=int, default=8)
+    parser.add_argument("--article-only", action=argparse.BooleanOptionalAction, default=True, help="Only write article text chunks for embedding; drop tables, appendices, and lower-level fallback chunks.")
     parser.add_argument("--ids-file", type=Path)
+    parser.add_argument(
+        "--effect-metadata-path",
+        type=Path,
+        default=Path("data/vietnam-legal-documentv2/legacy/metadata.parquet"),
+        help="Optional v2 legacy metadata parquet used to enrich effect_status by document id.",
+    )
     parser.add_argument("--limit", type=int, default=0, help="Optional document limit for smoke tests.")
     parser.add_argument("--progress-every", type=int, default=100)
     parser.add_argument("--preview-only", action="store_true", help="Only write qdrant_payload_preview.jsonl.")

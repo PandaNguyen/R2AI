@@ -28,6 +28,8 @@ CORE_KEYWORDS = [
     "nhỏ và vừa",
     "sme",
     "công ty",
+    "đăng ký",
+    "kinh doanh",
     "công ty cổ phần",
     "công ty trách nhiệm hữu hạn",
     "tnhh",
@@ -44,6 +46,23 @@ SUPPORT_KEYWORDS = [
     "phí",
     "lệ phí",
     "hóa đơn",
+    "xử lý",
+    "hồ sơ",
+    "nhân viên",
+    "cơ quan",
+    "yêu cầu",
+    "quy định",
+    "nội dung",
+    "điều kiện",
+    "thời hạn",
+    "thông tin",
+    "hỗ trợ",
+    "trách nhiệm",
+    "nghĩa vụ",
+    "thông báo",
+    "hàng hóa",
+    "khách hàng",
+    "quỹ",
     "giá trị gia tăng",
     "gtgt",
     "vat",
@@ -88,8 +107,54 @@ IMPORTANT_LEGAL_TYPES = {
     "thông tư liên tịch",
     "quyết định",
     "văn bản hợp nhất",
+    "code",
+    "law",
+    "ordinance",
+    "resolution",
+    "decree",
+    "circular",
+    "joint circular",
+    "decision",
+    "integrated document",
+    "consolidated document",
 }
-SUPPORT_LEGAL_TYPES = IMPORTANT_LEGAL_TYPES - {"quyết định", "nghị quyết"}
+SUPPORT_LEGAL_TYPES = IMPORTANT_LEGAL_TYPES - {"quyết định", "nghị quyết", "decision", "resolution"}
+
+EXPIRED_EFFECT_STATUS_VALUES = {"expired", "no longer applicable"}
+EXPIRED_EFFECT_STATUS_MARKERS = ("hết hiệu lực", "ngưng hiệu lực", "không còn phù hợp")
+
+LOCAL_AUTHORITY_MARKERS = (
+    "ủy ban nhân dân",
+    "uỷ ban nhân dân",
+    "hội đồng nhân dân",
+    "ubnd",
+    "hđnd",
+    "hdnd",
+)
+LOCAL_TITLE_MARKERS = (
+    "do ủy ban nhân dân",
+    "do uỷ ban nhân dân",
+    "do hội đồng nhân dân",
+    "của ủy ban nhân dân",
+    "của uỷ ban nhân dân",
+    "của hội đồng nhân dân",
+)
+LOCAL_DOCUMENT_NUMBER_MARKERS = (
+    "QĐ-UBND",
+    "QD-UBND",
+    "QĐ-CTUBND",
+    "QD-CTUBND",
+    "NQ-HĐND",
+    "NQ-HDND",
+    "QĐ-HĐND",
+    "QD-HDND",
+    "CT-UBND",
+    "TB-UBND",
+    "KH-UBND",
+    "CV-UBND",
+    "QĐ-UB",
+    "QD-UB",
+)
 
 CORE_LAW_IDS = {
     "59/2020/QH14",
@@ -146,6 +211,62 @@ def lower(value: Any) -> str:
     return normalize(value).lower()
 
 
+def first_value(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            return value
+    return None
+
+
+def joined_values(row: dict[str, Any], *keys: str) -> str:
+    return " | ".join(normalize(row.get(key)) for key in keys if normalize(row.get(key)))
+
+
+def normalize_vld_row(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    aliases = {
+        "document_number": ("document_number", "so_ky_hieu"),
+        "legal_type": ("legal_type", "loai_van_ban"),
+        "legal_sectors": ("legal_sectors", "nganh", "linh_vuc"),
+        "issuing_authority": ("issuing_authority", "co_quan_ban_hanh"),
+        "issuance_date": ("issuance_date", "ngay_ban_hanh"),
+        "signers": ("signers", "nguoi_ky"),
+        "effect_status": ("effect_status", "tinh_trang_hieu_luc"),
+        "effectless_date": ("effectless_date", "ngay_het_hieu_luc"),
+    }
+    for target, keys in aliases.items():
+        if target == "legal_sectors":
+            value = joined_values(row, *keys)
+        else:
+            value = first_value(row, *keys)
+        if value is not None and str(value).strip() and not normalize(normalized.get(target)):
+            normalized[target] = value
+    return normalized
+
+
+def effect_status(row: dict[str, Any]) -> str:
+    return normalize(first_value(row, "effect_status", "tinh_trang_hieu_luc"))
+
+
+def is_expired_document(row: dict[str, Any]) -> bool:
+    status = lower(effect_status(row))
+    if not status:
+        return False
+    return status in EXPIRED_EFFECT_STATUS_VALUES or any(marker in status for marker in EXPIRED_EFFECT_STATUS_MARKERS)
+
+
+def is_local_document(row: dict[str, Any]) -> bool:
+    authority = lower(row.get("issuing_authority"))
+    title = lower(row.get("title"))
+    document_number = normalize(row.get("document_number")).upper()
+    return (
+        any(marker in authority for marker in LOCAL_AUTHORITY_MARKERS)
+        or any(marker in title for marker in LOCAL_TITLE_MARKERS)
+        or any(marker in document_number for marker in LOCAL_DOCUMENT_NUMBER_MARKERS)
+    )
+
+
 def split_sectors(value: Any) -> list[str]:
     text = normalize(value)
     return [part.strip() for part in text.split("|") if part.strip()]
@@ -176,7 +297,66 @@ def pct(part: int, total: int) -> float:
     return round(part * 100 / total, 4) if total else 0.0
 
 
+def iter_parquet_rows(path: Path, columns: list[str] | None = None) -> Iterable[dict[str, Any]]:
+    pf = pq.ParquetFile(path)
+    for batch in pf.iter_batches(columns=columns):
+        table = batch.to_pydict()
+        keys = list(table)
+        for values in zip(*(table[key] for key in keys), strict=True):
+            yield dict(zip(keys, values, strict=True))
+
+
+def load_effect_status_by_id(effect_metadata_path: Path | None) -> dict[int, str]:
+    if effect_metadata_path is None or not effect_metadata_path.exists():
+        return {}
+
+    pf = pq.ParquetFile(effect_metadata_path)
+    names = set(pf.schema_arrow.names)
+    status_column = "effect_status" if "effect_status" in names else "tinh_trang_hieu_luc" if "tinh_trang_hieu_luc" in names else ""
+    if not status_column or "id" not in names:
+        return {}
+
+    statuses: dict[int, str] = {}
+    for row in iter_parquet_rows(effect_metadata_path, columns=["id", status_column]):
+        status = normalize(row.get(status_column))
+        if status:
+            statuses[int(row["id"])] = status
+    return statuses
+
+
+def merge_effect_status(row: dict[str, Any], effect_status_by_id: dict[int, str]) -> dict[str, Any]:
+    if not effect_status_by_id or effect_status(row):
+        return row
+    status = effect_status_by_id.get(int(row["id"]))
+    if not status:
+        return row
+    merged = dict(row)
+    merged["effect_status"] = status
+    return merged
+
+
+def resolve_vld_metadata_path(vld_root: Path) -> Path:
+    if vld_root.is_file():
+        return vld_root
+    candidates = [
+        vld_root / "metadata" / "data-00000-of-00001.parquet",
+        vld_root / "data" / "metadata.parquet",
+        vld_root / "legacy" / "metadata.parquet",
+        vld_root / "metadata.parquet",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"Could not find VLD metadata parquet under {vld_root}")
+
+
 def classify_vld_row(row: dict[str, Any], min_year: int) -> tuple[bool, str]:
+    row = normalize_vld_row(row)
+    if is_local_document(row):
+        return False, "local"
+    if is_expired_document(row):
+        return False, "expired"
+
     title = lower(row.get("title"))
     sectors = lower(row.get("legal_sectors"))
     document_number = normalize(row.get("document_number"))
@@ -200,9 +380,15 @@ def classify_vld_row(row: dict[str, Any], min_year: int) -> tuple[bool, str]:
     return False, "excluded"
 
 
-def analyze_vld_metadata(metadata_path: Path, output_dir: Path, min_year: int) -> dict[str, Any]:
+def analyze_vld_metadata(
+    metadata_path: Path,
+    output_dir: Path,
+    min_year: int,
+    effect_metadata_path: Path | None = None,
+) -> dict[str, Any]:
     pf = pq.ParquetFile(metadata_path)
     total = pf.metadata.num_rows
+    effect_status_by_id = load_effect_status_by_id(effect_metadata_path)
     type_counts: Counter[str] = Counter()
     sector_counts: Counter[str] = Counter()
     year_counts: Counter[str] = Counter()
@@ -210,6 +396,9 @@ def analyze_vld_metadata(metadata_path: Path, output_dir: Path, min_year: int) -
     kept_type_counts: Counter[str] = Counter()
     kept_sector_counts: Counter[str] = Counter()
     kept_year_counts: Counter[str] = Counter()
+    effect_status_counts: Counter[str] = Counter()
+    kept_effect_status_counts: Counter[str] = Counter()
+    excluded_reason_counts: Counter[str] = Counter()
     tier_counts: Counter[str] = Counter()
     kept_ids: list[int] = []
 
@@ -220,7 +409,7 @@ def analyze_vld_metadata(metadata_path: Path, output_dir: Path, min_year: int) -
             table = batch.to_pydict()
             keys = list(table)
             for values in zip(*(table[key] for key in keys), strict=True):
-                row = dict(zip(keys, values, strict=True))
+                row = normalize_vld_row(merge_effect_status(dict(zip(keys, values, strict=True)), effect_status_by_id))
                 legal_type = normalize(row.get("legal_type")) or "<missing>"
                 type_counts[legal_type] += 1
                 for sector in split_sectors(row.get("legal_sectors")):
@@ -229,9 +418,12 @@ def analyze_vld_metadata(metadata_path: Path, output_dir: Path, min_year: int) -
                 year_counts[str(year) if year is not None else "<missing>"] += 1
                 authority = normalize(row.get("issuing_authority")) or "<missing>"
                 authority_counts[authority] += 1
+                status_value = effect_status(row) or "<missing>"
+                effect_status_counts[status_value] += 1
 
                 keep, tier = classify_vld_row(row, min_year=min_year)
                 if not keep:
+                    excluded_reason_counts[tier] += 1
                     continue
                 tier_counts[tier] += 1
                 kept_id = int(row["id"])
@@ -240,6 +432,7 @@ def analyze_vld_metadata(metadata_path: Path, output_dir: Path, min_year: int) -
                 for sector in split_sectors(row.get("legal_sectors")):
                     kept_sector_counts[sector] += 1
                 kept_year_counts[str(year) if year is not None else "<missing>"] += 1
+                kept_effect_status_counts[status_value] += 1
                 meta_out.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     ids_txt.write_text("\n".join(str(doc_id) for doc_id in sorted(kept_ids)) + "\n", encoding="utf-8")
@@ -259,8 +452,16 @@ def analyze_vld_metadata(metadata_path: Path, output_dir: Path, min_year: int) -
             "support_keywords": SUPPORT_KEYWORDS,
             "core_law_ids": sorted(CORE_LAW_IDS),
             "support_law_ids": sorted(SUPPORT_LAW_IDS),
+            "effect_metadata_path": str(effect_metadata_path) if effect_metadata_path else "",
+            "effect_metadata_loaded": bool(effect_status_by_id),
+            "drop_expired_status_values": sorted(EXPIRED_EFFECT_STATUS_VALUES),
+            "drop_expired_status_markers": list(EXPIRED_EFFECT_STATUS_MARKERS),
+            "drop_local_authority_markers": list(LOCAL_AUTHORITY_MARKERS),
+            "drop_local_title_markers": list(LOCAL_TITLE_MARKERS),
+            "drop_local_document_number_markers": list(LOCAL_DOCUMENT_NUMBER_MARKERS),
         },
         "tier_counts": dict(tier_counts),
+        "excluded_reason_counts": dict(excluded_reason_counts),
         "top_legal_types_all": top(type_counts),
         "top_legal_types_kept": top(kept_type_counts),
         "top_sectors_all": top(sector_counts),
@@ -268,6 +469,8 @@ def analyze_vld_metadata(metadata_path: Path, output_dir: Path, min_year: int) -
         "top_years_all": top(year_counts),
         "top_years_kept": top(kept_year_counts),
         "top_authorities_all": top(authority_counts),
+        "top_effect_status_all": top(effect_status_counts),
+        "top_effect_status_kept": top(kept_effect_status_counts),
         "outputs": {
             "metadata_jsonl": str(metadata_jsonl),
             "ids_txt": str(ids_txt),
@@ -393,6 +596,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--phapdien-build-dir", type=Path, default=Path("build"))
     parser.add_argument("--output-dir", type=Path, default=Path("build/business_scope"))
     parser.add_argument("--min-year", type=int, default=2010)
+    parser.add_argument(
+        "--effect-metadata-path",
+        type=Path,
+        default=Path("data/vietnam-legal-documentv2/legacy/metadata.parquet"),
+        help="Optional v2 metadata parquet used to enrich effect_status by document id.",
+    )
     parser.add_argument("--scan-content", action="store_true")
     return parser
 
@@ -406,9 +615,14 @@ def main() -> None:
     args = build_parser().parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    metadata_path = args.vld_root / "metadata" / "data-00000-of-00001.parquet"
+    metadata_path = resolve_vld_metadata_path(args.vld_root)
     report: dict[str, Any] = {
-        "vietnamese_legal_documents": analyze_vld_metadata(metadata_path, args.output_dir, min_year=args.min_year),
+        "vietnamese_legal_documents": analyze_vld_metadata(
+            metadata_path,
+            args.output_dir,
+            min_year=args.min_year,
+            effect_metadata_path=args.effect_metadata_path,
+        ),
         "phapdien_business_scope": {},
     }
     if args.scan_content:

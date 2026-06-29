@@ -772,3 +772,7 @@ dense only type 2:
 
 
 uv run python main.py submit-qdrant   --questions data/R2AIStage1DATA.json   --output results_rerank.json   --mode hybrid   --top-k 4   --prefetch-limit 50   --doc-title-format type1   --rerank   --reranker-model AITeamVN/Vietnamese_Reranker   --reranker-max-length 2304   --qdrant-timeout 120   --progress-every 10 --doc-title-format type1 --zip-output hybridvld_type1_top4_rerank.zip --query-embeddings data/question_embeddings.npy --model-cache-dir /data/models
+
+phase 
+ingest dataset
+R2AI_BATCH_SIZE=128 R2AI_UPSERT_BATCH_SIZE=32 R2AI_FORCE_REBUILD=1 R2AI_RECREATE_COLLECTION=1 bash scripts/ingest_vld_qdrant_cloud.sh

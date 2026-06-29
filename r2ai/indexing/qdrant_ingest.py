@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import re
@@ -77,25 +78,42 @@ def ingest_phapdien_to_qdrant(config: QdrantIngestConfig) -> dict[str, Any]:
     skipped_points = count_checkpointed_preview_rows(_qdrant_preview_path(config.build_dir), completed_ids, config.limit)
     preview_rows = read_qdrant_preview_rows(_qdrant_preview_path(config.build_dir), limit=config.limit)
     pending_rows = (row for row in preview_rows if str(row["id"]) not in completed_ids)
-    for batch_index, rows in enumerate(batched(pending_rows, config.batch_size), start=1):
-        points = make_points(
+    upsert_batch_size = max(1, config.upsert_batch_size)
+    for embedding_batch_index, rows in enumerate(batched(pending_rows, config.batch_size), start=1):
+        dense_vectors, sparse_vectors = embed_rows(
             rows=rows,
             dense_model=dense_model,
             sparse_model=sparse_model,
-            models=models,
-            dense_vector_name=config.dense_vector_name,
-            sparse_vector_name=config.sparse_vector_name,
             dense_model_name=config.dense_model_name,
-            payload_metadata=payload_metadata,
         )
-        retry_request(
-            lambda: client.upsert(collection_name=config.collection_name, points=points, wait=True),
-            label=f"Qdrant upsert batch {batch_index}",
-        )
-        append_ingest_checkpoint(checkpoint_path, rows)
-        completed_ids.update(str(row["id"]) for row in rows)
-        total_points += len(points)
-        print(f"Upserted batch {batch_index}: {len(points)} points, total={total_points}")
+        for upsert_batch_index, start in enumerate(range(0, len(rows), upsert_batch_size), start=1):
+            end = min(start + upsert_batch_size, len(rows))
+            point_rows = rows[start:end]
+            points = make_points_from_vectors(
+                rows=point_rows,
+                dense_vectors=dense_vectors[start:end],
+                sparse_vectors=sparse_vectors[start:end],
+                models=models,
+                dense_vector_name=config.dense_vector_name,
+                sparse_vector_name=config.sparse_vector_name,
+                payload_metadata=payload_metadata,
+            )
+            retry_request(
+                lambda: client.upsert(collection_name=config.collection_name, points=points, wait=True),
+                label=f"Qdrant upsert embedding batch {embedding_batch_index}.{upsert_batch_index}",
+            )
+            append_ingest_checkpoint(checkpoint_path, point_rows)
+            completed_ids.update(str(row["id"]) for row in point_rows)
+            total_points += len(points)
+            print(
+                f"Upserted embedding batch {embedding_batch_index}.{upsert_batch_index}: "
+                f"{len(points)} points, total={total_points}",
+                flush=True,
+            )
+            del points
+            release_batch_memory()
+        del rows, dense_vectors, sparse_vectors
+        release_batch_memory(clear_cuda_cache=True)
 
     return {
         "collection_name": config.collection_name,
@@ -104,6 +122,8 @@ def ingest_phapdien_to_qdrant(config: QdrantIngestConfig) -> dict[str, Any]:
         "dense_size": dense_size,
         "hnsw_m": config.hnsw_m,
         "hnsw_ef_construct": config.hnsw_ef_construct,
+        "embedding_batch_size": config.batch_size,
+        "upsert_batch_size": config.upsert_batch_size,
         "points_upserted": total_points,
         "points_skipped_from_checkpoint": max(0, skipped_points),
         "checkpoint": str(checkpoint_path),
@@ -126,6 +146,18 @@ def batched(rows: Iterable[dict[str, Any]], batch_size: int) -> Iterator[list[di
         if not batch:
             return
         yield batch
+
+
+def release_batch_memory(*, clear_cuda_cache: bool = False) -> None:
+    gc.collect()
+    if not clear_cuda_cache:
+        return
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def count_checkpointed_preview_rows(path: Path, completed_ids: set[str], limit: int | None = None) -> int:
@@ -288,6 +320,30 @@ def make_points(
     dense_model_name: str | None = None,
     payload_metadata: dict[str, Any] | None = None,
 ) -> list[Any]:
+    dense_vectors, sparse_vectors = embed_rows(
+        rows=rows,
+        dense_model=dense_model,
+        sparse_model=sparse_model,
+        dense_model_name=dense_model_name,
+    )
+    return make_points_from_vectors(
+        rows=rows,
+        dense_vectors=dense_vectors,
+        sparse_vectors=sparse_vectors,
+        models=models,
+        dense_vector_name=dense_vector_name,
+        sparse_vector_name=sparse_vector_name,
+        payload_metadata=payload_metadata,
+    )
+
+
+def embed_rows(
+    *,
+    rows: list[dict[str, Any]],
+    dense_model: Any,
+    sparse_model: Any,
+    dense_model_name: str | None = None,
+) -> tuple[Any, list[Any]]:
     texts = [row["payload"]["retrieval_text"] for row in rows]
     dense_vectors = dense_model.encode(
         texts,
@@ -297,7 +353,19 @@ def make_points(
         **_dense_encode_kwargs(dense_model_name, prompt_name="document"),
     )
     sparse_vectors = list(sparse_model.embed(texts))
+    return dense_vectors, sparse_vectors
 
+
+def make_points_from_vectors(
+    *,
+    rows: list[dict[str, Any]],
+    dense_vectors: Any,
+    sparse_vectors: list[Any],
+    models: Any,
+    dense_vector_name: str,
+    sparse_vector_name: str,
+    payload_metadata: dict[str, Any] | None = None,
+) -> list[Any]:
     points = []
     for row, dense_vector, sparse_vector in zip(rows, dense_vectors, sparse_vectors, strict=True):
         payload = dict(row["payload"])

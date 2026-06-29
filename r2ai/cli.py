@@ -28,6 +28,7 @@ from r2ai.indexing.config import (
     DEFAULT_SEARCH_MODE,
     DEFAULT_SPARSE_MODEL,
     DEFAULT_TRACE_SEARCH,
+    DEFAULT_UPSERT_BATCH_SIZE,
     QdrantIngestConfig,
     QdrantSearchConfig,
 )
@@ -85,7 +86,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ingest.add_argument("--dense-model", default=DEFAULT_DENSE_MODEL)
     ingest.add_argument("--sparse-model", default=DEFAULT_SPARSE_MODEL)
-    ingest.add_argument("--batch-size", type=int, default=16)
+    ingest.add_argument("--batch-size", type=int, default=16, help="Dense/sparse embedding batch size")
+    ingest.add_argument("--upsert-batch-size", type=int, default=DEFAULT_UPSERT_BATCH_SIZE, help="Qdrant upsert sub-batch size; checkpointed independently from embedding batches")
     ingest.add_argument("--model-cache-dir", type=Path, default=None)
     ingest.add_argument("--recreate-collection", action="store_true")
     ingest.add_argument("--skip-build", action="store_true")
@@ -298,6 +300,7 @@ def main() -> None:
                 dense_model_name=args.dense_model,
                 sparse_model_name=args.sparse_model,
                 batch_size=args.batch_size,
+                upsert_batch_size=args.upsert_batch_size,
                 model_cache_dir=args.model_cache_dir,
                 recreate_collection=args.recreate_collection,
                 skip_build=args.skip_build,

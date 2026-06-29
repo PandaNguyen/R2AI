@@ -39,6 +39,8 @@ CORE_KEYWORDS = [
     "nhỏ và vừa",
     "sme",
     "công ty",
+    "đăng ký",
+    "kinh doanh",
     "công ty cổ phần",
     "công ty trách nhiệm hữu hạn",
     "tnhh",
@@ -55,6 +57,23 @@ SUPPORT_KEYWORDS = [
     "phí",
     "lệ phí",
     "hóa đơn",
+    "xử lý",
+    "hồ sơ",
+    "nhân viên",
+    "cơ quan",
+    "yêu cầu",
+    "quy định",
+    "nội dung",
+    "điều kiện",
+    "thời hạn",
+    "thông tin",
+    "hỗ trợ",
+    "trách nhiệm",
+    "nghĩa vụ",
+    "thông báo",
+    "hàng hóa",
+    "khách hàng",
+    "quỹ",
     "giá trị gia tăng",
     "gtgt",
     "vat",
@@ -99,8 +118,54 @@ IMPORTANT_LEGAL_TYPES = {
     "thông tư liên tịch",
     "quyết định",
     "văn bản hợp nhất",
+    "code",
+    "law",
+    "ordinance",
+    "resolution",
+    "decree",
+    "circular",
+    "joint circular",
+    "decision",
+    "integrated document",
+    "consolidated document",
 }
-SUPPORT_LEGAL_TYPES = IMPORTANT_LEGAL_TYPES - {"quyết định", "nghị quyết"}
+SUPPORT_LEGAL_TYPES = IMPORTANT_LEGAL_TYPES - {"quyết định", "nghị quyết", "decision", "resolution"}
+
+EXPIRED_EFFECT_STATUS_VALUES = {"expired", "no longer applicable"}
+EXPIRED_EFFECT_STATUS_MARKERS = ("hết hiệu lực", "ngưng hiệu lực", "không còn phù hợp")
+
+LOCAL_AUTHORITY_MARKERS = (
+    "ủy ban nhân dân",
+    "uỷ ban nhân dân",
+    "hội đồng nhân dân",
+    "ubnd",
+    "hđnd",
+    "hdnd",
+)
+LOCAL_TITLE_MARKERS = (
+    "do ủy ban nhân dân",
+    "do uỷ ban nhân dân",
+    "do hội đồng nhân dân",
+    "của ủy ban nhân dân",
+    "của uỷ ban nhân dân",
+    "của hội đồng nhân dân",
+)
+LOCAL_DOCUMENT_NUMBER_MARKERS = (
+    "QĐ-UBND",
+    "QD-UBND",
+    "QĐ-CTUBND",
+    "QD-CTUBND",
+    "NQ-HĐND",
+    "NQ-HDND",
+    "QĐ-HĐND",
+    "QD-HDND",
+    "CT-UBND",
+    "TB-UBND",
+    "KH-UBND",
+    "CV-UBND",
+    "QĐ-UB",
+    "QD-UB",
+)
 
 CORE_LAW_IDS = {
     "59/2020/QH14",
@@ -170,6 +235,62 @@ def lower(value: Any) -> str:
     return compact(value).lower()
 
 
+def first_value(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            return value
+    return None
+
+
+def joined_values(row: dict[str, Any], *keys: str) -> str:
+    return " | ".join(compact(row.get(key)) for key in keys if compact(row.get(key)))
+
+
+def normalize_metadata_row(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    aliases = {
+        "document_number": ("document_number", "so_ky_hieu"),
+        "legal_type": ("legal_type", "loai_van_ban"),
+        "legal_sectors": ("legal_sectors", "nganh", "linh_vuc"),
+        "issuing_authority": ("issuing_authority", "co_quan_ban_hanh"),
+        "issuance_date": ("issuance_date", "ngay_ban_hanh"),
+        "signers": ("signers", "nguoi_ky"),
+        "effect_status": ("effect_status", "tinh_trang_hieu_luc"),
+        "effectless_date": ("effectless_date", "ngay_het_hieu_luc"),
+    }
+    for target, keys in aliases.items():
+        if target == "legal_sectors":
+            value = joined_values(row, *keys)
+        else:
+            value = first_value(row, *keys)
+        if value is not None and str(value).strip() and not compact(normalized.get(target)):
+            normalized[target] = value
+    return normalized
+
+
+def effect_status(row: dict[str, Any]) -> str:
+    return compact(first_value(row, "effect_status", "tinh_trang_hieu_luc"))
+
+
+def is_expired_document(row: dict[str, Any]) -> bool:
+    status = lower(effect_status(row))
+    if not status:
+        return False
+    return status in EXPIRED_EFFECT_STATUS_VALUES or any(marker in status for marker in EXPIRED_EFFECT_STATUS_MARKERS)
+
+
+def is_local_document(row: dict[str, Any]) -> bool:
+    authority = lower(row.get("issuing_authority"))
+    title = lower(row.get("title"))
+    document_number = compact(row.get("document_number")).upper()
+    return (
+        any(marker in authority for marker in LOCAL_AUTHORITY_MARKERS)
+        or any(marker in title for marker in LOCAL_TITLE_MARKERS)
+        or any(marker in document_number for marker in LOCAL_DOCUMENT_NUMBER_MARKERS)
+    )
+
+
 def parse_year(value: Any) -> int | None:
     matches = YEAR_PATTERN.findall(compact(value))
     if not matches:
@@ -196,6 +317,12 @@ def split_sectors(value: Any) -> list[str]:
 
 
 def classify_metadata(row: dict[str, Any], min_year: int) -> tuple[bool, str]:
+    row = normalize_metadata_row(row)
+    if is_local_document(row):
+        return False, "local"
+    if is_expired_document(row):
+        return False, "expired"
+
     title = lower(row.get("title"))
     sectors = lower(row.get("legal_sectors"))
     document_number = compact(row.get("document_number"))
@@ -439,17 +566,55 @@ def iter_parquet_rows(path: Path, columns: list[str] | None = None) -> Iterator[
             yield dict(zip(keys, values, strict=True))
 
 
-def load_filtered_metadata(metadata_path: Path, min_year: int) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
+def load_effect_status_by_id(effect_metadata_path: Path | None) -> dict[int, str]:
+    if effect_metadata_path is None or not effect_metadata_path.exists():
+        return {}
+
+    pf = pq.ParquetFile(effect_metadata_path)
+    names = set(pf.schema_arrow.names)
+    status_column = "effect_status" if "effect_status" in names else "tinh_trang_hieu_luc" if "tinh_trang_hieu_luc" in names else ""
+    if not status_column or "id" not in names:
+        return {}
+
+    statuses: dict[int, str] = {}
+    for row in iter_parquet_rows(effect_metadata_path, columns=["id", status_column]):
+        status = compact(row.get(status_column))
+        if status:
+            statuses[int(row["id"])] = status
+    return statuses
+
+
+def merge_effect_status(row: dict[str, Any], effect_status_by_id: dict[int, str]) -> dict[str, Any]:
+    if not effect_status_by_id or effect_status(row):
+        return row
+    status = effect_status_by_id.get(int(row["id"]))
+    if not status:
+        return row
+    merged = dict(row)
+    merged["effect_status"] = status
+    return merged
+
+
+def load_filtered_metadata(
+    metadata_path: Path,
+    min_year: int,
+    effect_metadata_path: Path | None = None,
+) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
     total = 0
+    effect_status_by_id = load_effect_status_by_id(effect_metadata_path)
     kept: dict[int, dict[str, Any]] = {}
     tier_counts: Counter[str] = Counter()
+    excluded_reason_counts: Counter[str] = Counter()
     type_counts: Counter[str] = Counter()
     sector_counts: Counter[str] = Counter()
+    effect_status_counts: Counter[str] = Counter()
 
     for row in iter_parquet_rows(metadata_path):
         total += 1
+        row = normalize_metadata_row(merge_effect_status(row, effect_status_by_id))
         keep, tier = classify_metadata(row, min_year=min_year)
         if not keep:
+            excluded_reason_counts[tier] += 1
             continue
         doc_id = int(row["id"])
         row["_business_scope_tier"] = tier
@@ -458,14 +623,19 @@ def load_filtered_metadata(metadata_path: Path, min_year: int) -> tuple[dict[int
         type_counts[compact(row.get("legal_type")) or "<missing>"] += 1
         for sector in split_sectors(row.get("legal_sectors")):
             sector_counts[sector] += 1
+        effect_status_counts[effect_status(row) or "<missing>"] += 1
 
     return kept, {
         "total_documents": total,
         "kept_documents": len(kept),
         "kept_percent": round(len(kept) * 100 / total, 4) if total else 0.0,
         "tier_counts": dict(tier_counts),
+        "excluded_reason_counts": dict(excluded_reason_counts),
+        "effect_metadata_path": str(effect_metadata_path) if effect_metadata_path else "",
+        "effect_metadata_loaded": bool(effect_status_by_id),
         "top_legal_types_kept": dict(type_counts.most_common(25)),
         "top_sectors_kept": dict(sector_counts.most_common(25)),
+        "top_effect_status_kept": dict(effect_status_counts.most_common(25)),
     }
 
 
@@ -474,7 +644,11 @@ def write_vld_artifacts(args: argparse.Namespace) -> dict[str, Any]:
     content_dir = args.vld_root / "content"
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    metadata_by_id, metadata_report = load_filtered_metadata(metadata_path, min_year=args.min_year)
+    metadata_by_id, metadata_report = load_filtered_metadata(
+        metadata_path,
+        min_year=args.min_year,
+        effect_metadata_path=args.effect_metadata_path,
+    )
     wanted_ids = set(metadata_by_id)
 
     articles_path = args.output_dir / "articles.jsonl"
@@ -559,6 +733,11 @@ def write_vld_artifacts(args: argparse.Namespace) -> dict[str, Any]:
             "support_law_ids": sorted(SUPPORT_LAW_IDS),
             "important_legal_types": sorted(IMPORTANT_LEGAL_TYPES),
             "support_legal_types": sorted(SUPPORT_LEGAL_TYPES),
+            "drop_expired_status_values": sorted(EXPIRED_EFFECT_STATUS_VALUES),
+            "drop_expired_status_markers": list(EXPIRED_EFFECT_STATUS_MARKERS),
+            "drop_local_authority_markers": list(LOCAL_AUTHORITY_MARKERS),
+            "drop_local_title_markers": list(LOCAL_TITLE_MARKERS),
+            "drop_local_document_number_markers": list(LOCAL_DOCUMENT_NUMBER_MARKERS),
             "require_vietnamese_content": args.require_vietnamese_content,
             "min_vietnamese_marker_ratio": args.min_vietnamese_marker_ratio,
         },
@@ -597,6 +776,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vld-root", type=Path, default=Path("data/vietnamese-legal-documents"))
     parser.add_argument("--output-dir", type=Path, default=Path("build/vld_business_scope"))
     parser.add_argument("--min-year", type=int, default=2010)
+    parser.add_argument(
+        "--effect-metadata-path",
+        type=Path,
+        default=Path("data/vietnam-legal-documentv2/legacy/metadata.parquet"),
+        help="Optional v2 legacy metadata parquet used to enrich effect_status by document id.",
+    )
     parser.add_argument("--max-chunk-tokens", type=int, default=DEFAULT_MAX_CHUNK_TOKENS)
     parser.add_argument("--chunk-overlap-tokens", type=int, default=DEFAULT_CHUNK_OVERLAP_TOKENS)
     parser.add_argument("--max-chunks-per-document", type=int, default=0)

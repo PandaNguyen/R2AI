@@ -29,8 +29,9 @@ DEFAULT_EXCLUDE_LOCAL_DOCUMENTS = True
 DEFAULT_REQUIRE_ARTICLE = True
 DEFAULT_TRACE_SEARCH = False
 DEFAULT_MODEL_CACHE_DIR = Path.cwd() / ".cache" 
-DEFAULT_HNSW_M: int | None = None
-DEFAULT_HNSW_EF_CONSTRUCT: int | None = None
+DEFAULT_HNSW_M: int | None = 32
+DEFAULT_HNSW_EF_CONSTRUCT: int | None = 200
+DEFAULT_UPSERT_BATCH_SIZE = 32
 
 @dataclass(frozen=True)
 class QdrantIngestConfig:
@@ -44,6 +45,7 @@ class QdrantIngestConfig:
     dense_vector_name: str = DEFAULT_DENSE_VECTOR_NAME
     sparse_vector_name: str = DEFAULT_SPARSE_VECTOR_NAME
     batch_size: int = 16
+    upsert_batch_size: int = DEFAULT_UPSERT_BATCH_SIZE
     model_cache_dir: Path | None = DEFAULT_MODEL_CACHE_DIR
     recreate_collection: bool = False
     skip_build: bool = False
@@ -62,6 +64,7 @@ class QdrantIngestConfig:
         dense_model_name: str = DEFAULT_DENSE_MODEL,
         sparse_model_name: str = DEFAULT_SPARSE_MODEL,
         batch_size: int = 16,
+        upsert_batch_size: int = DEFAULT_UPSERT_BATCH_SIZE,
         model_cache_dir: Path | None = DEFAULT_MODEL_CACHE_DIR,
         recreate_collection: bool = False,
         skip_build: bool = False,
@@ -86,6 +89,7 @@ class QdrantIngestConfig:
             dense_model_name=dense_model_name,
             sparse_model_name=sparse_model_name,
             batch_size=batch_size,
+            upsert_batch_size=upsert_batch_size,
             model_cache_dir=model_cache_dir,
             recreate_collection=recreate_collection,
             skip_build=skip_build,

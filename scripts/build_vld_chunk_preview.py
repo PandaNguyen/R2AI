@@ -508,6 +508,19 @@ def build_chunks_for_tree(
     def add_article_text_chunks(article_node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
         items = collect_subtree_text_items(article_node)
         if not items:
+            title = normalize(article_node.get("title"))
+            if title:
+                add_chunk(
+                    article_node,
+                    ancestors,
+                    "article_title_chunk",
+                    "",
+                    {
+                        "type": "text",
+                        "line_start": article_node.get("line_start"),
+                        "line_end": article_node.get("line_end"),
+                    },
+                )
             return
         text = render_text_items(items)
         budget = content_budget(document, ancestors, article_node, max_text_tokens)
@@ -790,7 +803,7 @@ def make_qdrant_preview(chunk: dict[str, Any]) -> dict[str, Any]:
         "id": chunk["id"],
         "payload": {key: value for key, value in chunk.items() if key != "id"},
         "vectors": {
-            "dense": {"model": "BAAI/bge-m3", "source": "local", "status": "not_embedded"},
+            "dense": {"model": "AITeamVN/Vietnamese_Embedding_v2", "source": "local", "status": "not_embedded"},
             "sparse": {"model": "Qdrant/bm25", "source": "qdrant", "field": "retrieval_text"},
         },
     }
