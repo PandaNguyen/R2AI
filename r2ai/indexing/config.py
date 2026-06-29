@@ -17,6 +17,7 @@ DEFAULT_SPARSE_VECTOR_NAME = "bm25"
 DEFAULT_QUERY_INSTRUCTION = ""
 DEFAULT_PREFETCH_LIMIT = 20
 DEFAULT_SEARCH_MODE = "hybrid"
+DEFAULT_RRF_WEIGHTS = (1.0, 1.0)
 DEFAULT_SEARCH_QDRANT_TIMEOUT = 30.0
 DEFAULT_DOC_TITLE_FORMAT = "type1"
 DEFAULT_ANSWER_ARTICLE_LIMIT: int | None = None
@@ -28,6 +29,12 @@ DEFAULT_RERANK_THRESHOLD: float | None = None
 DEFAULT_EXCLUDE_LOCAL_DOCUMENTS = True
 DEFAULT_REQUIRE_ARTICLE = True
 DEFAULT_TRACE_SEARCH = False
+DEFAULT_LLM_CANDIDATE_SELECTOR_MODEL = "AITeamVN/Vi-Qwen2-7B-RAG"
+DEFAULT_LLM_SELECTOR_MAX_CANDIDATES = 20
+DEFAULT_LLM_SELECTOR_MAX_NEW_TOKENS = 256
+DEFAULT_LLM_SELECTOR_TEMPERATURE = 0.0
+DEFAULT_LLM_SELECTOR_SNIPPET_CHARS = 0
+DEFAULT_LLM_SELECTOR_CONTEXT_WINDOW = 8192
 DEFAULT_MODEL_CACHE_DIR = Path.cwd() / ".cache" 
 DEFAULT_HNSW_M: int | None = 32
 DEFAULT_HNSW_EF_CONSTRUCT: int | None = 200
@@ -114,6 +121,7 @@ class QdrantSearchConfig:
     sparse_vector_name: str = DEFAULT_SPARSE_VECTOR_NAME
     top_k: int = 5
     prefetch_limit: int = DEFAULT_PREFETCH_LIMIT
+    rrf_weights: tuple[float, float] = DEFAULT_RRF_WEIGHTS
     qdrant_timeout: float = DEFAULT_SEARCH_QDRANT_TIMEOUT
     doc_title_format: str = DEFAULT_DOC_TITLE_FORMAT
     answer_article_limit: int | None = DEFAULT_ANSWER_ARTICLE_LIMIT
@@ -128,6 +136,14 @@ class QdrantSearchConfig:
     exclude_local_documents: bool = DEFAULT_EXCLUDE_LOCAL_DOCUMENTS
     require_article: bool = DEFAULT_REQUIRE_ARTICLE
     trace_search: bool = DEFAULT_TRACE_SEARCH
+    keep_candidate_pool: bool = False
+    llm_select_candidates: bool = False
+    llm_selector_model_name: str = DEFAULT_LLM_CANDIDATE_SELECTOR_MODEL
+    llm_selector_max_candidates: int = DEFAULT_LLM_SELECTOR_MAX_CANDIDATES
+    llm_selector_max_new_tokens: int = DEFAULT_LLM_SELECTOR_MAX_NEW_TOKENS
+    llm_selector_temperature: float = DEFAULT_LLM_SELECTOR_TEMPERATURE
+    llm_selector_snippet_chars: int = DEFAULT_LLM_SELECTOR_SNIPPET_CHARS
+    llm_selector_context_window: int = DEFAULT_LLM_SELECTOR_CONTEXT_WINDOW
     topic_title: str | None = None
     subject_title: str | None = None
     source_law_id: str | None = None
@@ -145,6 +161,7 @@ class QdrantSearchConfig:
         sparse_model_name: str = DEFAULT_SPARSE_MODEL,
         top_k: int = 5,
         prefetch_limit: int = DEFAULT_PREFETCH_LIMIT,
+        rrf_weights: tuple[float, float] | list[float] | str | None = None,
         qdrant_timeout: float = DEFAULT_SEARCH_QDRANT_TIMEOUT,
         doc_title_format: str = DEFAULT_DOC_TITLE_FORMAT,
         answer_article_limit: int | None = DEFAULT_ANSWER_ARTICLE_LIMIT,
@@ -159,6 +176,14 @@ class QdrantSearchConfig:
         exclude_local_documents: bool = DEFAULT_EXCLUDE_LOCAL_DOCUMENTS,
         require_article: bool = DEFAULT_REQUIRE_ARTICLE,
         trace_search: bool = DEFAULT_TRACE_SEARCH,
+        keep_candidate_pool: bool = False,
+        llm_select_candidates: bool = False,
+        llm_selector_model_name: str = DEFAULT_LLM_CANDIDATE_SELECTOR_MODEL,
+        llm_selector_max_candidates: int = DEFAULT_LLM_SELECTOR_MAX_CANDIDATES,
+        llm_selector_max_new_tokens: int = DEFAULT_LLM_SELECTOR_MAX_NEW_TOKENS,
+        llm_selector_temperature: float = DEFAULT_LLM_SELECTOR_TEMPERATURE,
+        llm_selector_snippet_chars: int = DEFAULT_LLM_SELECTOR_SNIPPET_CHARS,
+        llm_selector_context_window: int = DEFAULT_LLM_SELECTOR_CONTEXT_WINDOW,
         topic_title: str | None = None,
         subject_title: str | None = None,
         source_law_id: str | None = None,
@@ -174,6 +199,11 @@ class QdrantSearchConfig:
             raise RuntimeError("Missing QDRANT_API_KEY environment variable.")
         if use_jina_reranker and reranker_model_name == DEFAULT_RERANKER_MODEL:
             reranker_model_name = DEFAULT_JINA_RERANKER_MODEL
+        parsed_rrf_weights = parse_rrf_weights(
+            rrf_weights
+            if rrf_weights is not None
+            else os.getenv("QDRANT_RRF_WEIGHTS", "").strip()
+        )
         return cls(
             collection_name=collection_name or os.getenv("QDRANT_COLLECTION", DEFAULT_COLLECTION),
             qdrant_url=qdrant_url,
@@ -184,6 +214,7 @@ class QdrantSearchConfig:
             sparse_model_name=sparse_model_name,
             top_k=top_k,
             prefetch_limit=prefetch_limit,
+            rrf_weights=parsed_rrf_weights,
             qdrant_timeout=qdrant_timeout,
             doc_title_format=doc_title_format,
             answer_article_limit=answer_article_limit,
@@ -198,6 +229,14 @@ class QdrantSearchConfig:
             exclude_local_documents=exclude_local_documents,
             require_article=require_article,
             trace_search=trace_search,
+            keep_candidate_pool=keep_candidate_pool,
+            llm_select_candidates=llm_select_candidates,
+            llm_selector_model_name=llm_selector_model_name,
+            llm_selector_max_candidates=llm_selector_max_candidates,
+            llm_selector_max_new_tokens=llm_selector_max_new_tokens,
+            llm_selector_temperature=llm_selector_temperature,
+            llm_selector_snippet_chars=llm_selector_snippet_chars,
+            llm_selector_context_window=llm_selector_context_window,
             topic_title=topic_title,
             subject_title=subject_title,
             source_law_id=source_law_id,
@@ -205,3 +244,21 @@ class QdrantSearchConfig:
             citation_confidence=citation_confidence,
             topic_number=topic_number,
         )
+
+
+def parse_rrf_weights(value: tuple[float, float] | list[float] | str | None) -> tuple[float, float]:
+    """Parse RRF weights ordered as sparse/BM25, then dense."""
+    if value is None or value == "":
+        return DEFAULT_RRF_WEIGHTS
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.replace(":", ",").split(",") if part.strip()]
+    else:
+        parts = list(value)
+    if len(parts) != 2:
+        raise ValueError("rrf_weights must contain exactly 2 values ordered as sparse,dense.")
+    weights = tuple(float(part) for part in parts)
+    if any(weight < 0 for weight in weights):
+        raise ValueError("rrf_weights values must be non-negative.")
+    if not any(weight > 0 for weight in weights):
+        raise ValueError("at least one rrf_weights value must be positive.")
+    return weights

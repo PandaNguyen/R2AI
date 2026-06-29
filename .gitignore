@@ -22,3 +22,5 @@ output.json
 results*.json
 results*.jsonl
 trace_search_jina.jsonl
+*.log
+*.jsonl

@@ -19,10 +19,17 @@ from r2ai.indexing.config import (
     DEFAULT_HNSW_EF_CONSTRUCT,
     DEFAULT_JINA_RERANKER_MODEL,
     DEFAULT_HNSW_M,
+    DEFAULT_LLM_CANDIDATE_SELECTOR_MODEL,
+    DEFAULT_LLM_SELECTOR_MAX_CANDIDATES,
+    DEFAULT_LLM_SELECTOR_MAX_NEW_TOKENS,
+    DEFAULT_LLM_SELECTOR_CONTEXT_WINDOW,
+    DEFAULT_LLM_SELECTOR_SNIPPET_CHARS,
+    DEFAULT_LLM_SELECTOR_TEMPERATURE,
     DEFAULT_PREFETCH_LIMIT,
     DEFAULT_RERANKER_MAX_LENGTH,
     DEFAULT_RERANKER_MODEL,
     DEFAULT_REQUIRE_ARTICLE,
+    DEFAULT_RRF_WEIGHTS,
     DEFAULT_SEARCH_QDRANT_TIMEOUT,
     DEFAULT_USE_JINA_RERANKER,
     DEFAULT_SEARCH_MODE,
@@ -34,13 +41,31 @@ from r2ai.indexing.config import (
 )
 from r2ai.indexing.qdrant_ingest import ingest_phapdien_to_qdrant
 from r2ai.retrieval.qdrant_search import (
+    format_competition_row,
+    load_search_result_rows,
     load_query_vectors,
     load_questions,
     search_qdrant,
     search_qdrant_batch,
+    select_submission_rows_from_search_results,
     write_submission,
     write_submission_zip,
 )
+
+
+def add_llm_selector_arguments(command: argparse.ArgumentParser, *, include_enable_flag: bool = True) -> None:
+    if include_enable_flag:
+        command.add_argument(
+            "--llm-select-candidates",
+            action="store_true",
+            help="Use an LLM to choose the final submission candidates from the retrieved pool",
+        )
+    command.add_argument("--llm-selector-model", default=DEFAULT_LLM_CANDIDATE_SELECTOR_MODEL)
+    command.add_argument("--llm-selector-max-candidates", type=int, default=DEFAULT_LLM_SELECTOR_MAX_CANDIDATES)
+    command.add_argument("--llm-selector-max-new-tokens", type=int, default=DEFAULT_LLM_SELECTOR_MAX_NEW_TOKENS)
+    command.add_argument("--llm-selector-context-window", type=int, default=DEFAULT_LLM_SELECTOR_CONTEXT_WINDOW)
+    command.add_argument("--llm-selector-temperature", type=float, default=DEFAULT_LLM_SELECTOR_TEMPERATURE)
+    command.add_argument("--llm-selector-snippet-chars", type=int, default=DEFAULT_LLM_SELECTOR_SNIPPET_CHARS)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -116,6 +141,14 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--sparse-model", default=DEFAULT_SPARSE_MODEL)
     search.add_argument("--top-k", type=int, default=5)
     search.add_argument("--prefetch-limit", type=int, default=DEFAULT_PREFETCH_LIMIT)
+    search.add_argument(
+        "--rrf-weights",
+        type=float,
+        nargs=2,
+        metavar=("SPARSE", "DENSE"),
+        default=None,
+        help=f"Hybrid RRF weights ordered as bm25/sparse then dense; defaults to {DEFAULT_RRF_WEIGHTS}",
+    )
     search.add_argument("--qdrant-timeout", type=float, default=DEFAULT_SEARCH_QDRANT_TIMEOUT)
     search.add_argument("--doc-title-format", choices=["type1", "type2"], default=DEFAULT_DOC_TITLE_FORMAT)
     search.add_argument("--answer-article-limit", type=int, default=DEFAULT_ANSWER_ARTICLE_LIMIT)
@@ -166,6 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TRACE_SEARCH,
         help="Write JSONL trace logs for search, rerank, and final submission refs to stderr",
     )
+    add_llm_selector_arguments(search)
 
     submit = subparsers.add_parser("submit-qdrant", help="Create competition results.json from Qdrant retrieval")
     submit.add_argument("--questions", type=Path, required=True, help="Question file: .json, .jsonl, or .csv")
@@ -178,6 +212,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="JSONL checkpoint for completed question predictions; defaults to <output>.checkpoint.jsonl",
     )
+    submit.add_argument(
+        "--candidate-results-output",
+        type=Path,
+        default=None,
+        help="Write reranked candidate search results to this file and skip final submission formatting",
+    )
+    submit.add_argument("--candidate-results-format", choices=["json", "jsonl"], default="jsonl")
     submit.add_argument("--no-resume", action="store_true", help="Ignore any existing submission checkpoint")
     submit.add_argument(
         "--collection",
@@ -189,6 +230,14 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--sparse-model", default=DEFAULT_SPARSE_MODEL)
     submit.add_argument("--top-k", type=int, default=5)
     submit.add_argument("--prefetch-limit", type=int, default=DEFAULT_PREFETCH_LIMIT)
+    submit.add_argument(
+        "--rrf-weights",
+        type=float,
+        nargs=2,
+        metavar=("SPARSE", "DENSE"),
+        default=None,
+        help=f"Hybrid RRF weights ordered as bm25/sparse then dense; defaults to {DEFAULT_RRF_WEIGHTS}",
+    )
     submit.add_argument("--qdrant-timeout", type=float, default=DEFAULT_SEARCH_QDRANT_TIMEOUT)
     submit.add_argument("--doc-title-format", choices=["type1", "type2"], default=DEFAULT_DOC_TITLE_FORMAT)
     submit.add_argument("--answer-article-limit", type=int, default=DEFAULT_ANSWER_ARTICLE_LIMIT)
@@ -242,6 +291,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TRACE_SEARCH,
         help="Write JSONL trace logs for search, rerank, and final submission refs to stderr",
     )
+    add_llm_selector_arguments(submit)
+
+    select = subparsers.add_parser(
+        "select-submit-candidates",
+        help="Create competition results.json from a reranked candidate results file",
+    )
+    select.add_argument("--candidate-results", type=Path, required=True, help="Candidate results JSON/JSONL from submit-qdrant --candidate-results-output")
+    select.add_argument("--output", type=Path, default=Path("results.json"))
+    select.add_argument("--output-format", choices=["json", "jsonl"], default="json")
+    select.add_argument("--zip-output", type=Path, default=None, help="Optional flat zip containing results.json")
+    select.add_argument("--fallback-top-k", type=int, default=5, help="Fallback top-k when LLM selector output cannot be parsed")
+    select.add_argument("--model-cache-dir", type=Path, default=None)
+    select.add_argument("--progress-every", type=int, default=25)
+    add_llm_selector_arguments(select, include_enable_flag=False)
     return parser
 
 
@@ -268,6 +331,8 @@ def main() -> None:
     args = parser.parse_args()
     if getattr(args, "rerank_threshold", None) is not None and not getattr(args, "rerank", False):
         parser.error("--rerank-threshold requires --rerank")
+    if getattr(args, "candidate_results_output", None) is not None and getattr(args, "llm_select_candidates", False):
+        parser.error("--candidate-results-output writes the pre-LLM candidate pool; run select-submit-candidates afterward")
 
     if args.command == "build-phapdien-data":
         report = build_phapdien_data(
@@ -325,6 +390,7 @@ def main() -> None:
                 sparse_model_name=args.sparse_model,
                 top_k=args.top_k,
                 prefetch_limit=args.prefetch_limit,
+                rrf_weights=args.rrf_weights,
                 qdrant_timeout=args.qdrant_timeout,
                 doc_title_format=args.doc_title_format,
                 answer_article_limit=args.answer_article_limit,
@@ -339,6 +405,13 @@ def main() -> None:
                 exclude_local_documents=args.exclude_local_documents,
                 require_article=args.require_article,
                 trace_search=args.trace_search,
+                llm_select_candidates=args.llm_select_candidates,
+                llm_selector_model_name=args.llm_selector_model,
+                llm_selector_max_candidates=args.llm_selector_max_candidates,
+                llm_selector_max_new_tokens=args.llm_selector_max_new_tokens,
+                llm_selector_context_window=args.llm_selector_context_window,
+                llm_selector_temperature=args.llm_selector_temperature,
+                llm_selector_snippet_chars=args.llm_selector_snippet_chars,
                 topic_title=args.topic_title,
                 subject_title=args.subject_title,
                 source_law_id=args.source_law_id,
@@ -359,7 +432,9 @@ def main() -> None:
                 query_vectors = query_vectors[: args.limit]
         checkpoint_output = None
         if not args.no_resume:
-            checkpoint_output = args.checkpoint_output or args.output.with_name(f"{args.output.name}.checkpoint.jsonl")
+            checkpoint_base = args.candidate_results_output or args.output
+            checkpoint_output = args.checkpoint_output or checkpoint_base.with_name(f"{checkpoint_base.name}.checkpoint.jsonl")
+        output_search_results = args.candidate_results_output is not None
         rows = search_qdrant_batch(
             QdrantSearchConfig.from_env(
                 query_text="placeholder",
@@ -369,6 +444,7 @@ def main() -> None:
                 sparse_model_name=args.sparse_model,
                 top_k=args.top_k,
                 prefetch_limit=args.prefetch_limit,
+                rrf_weights=args.rrf_weights,
                 qdrant_timeout=args.qdrant_timeout,
                 doc_title_format=args.doc_title_format,
                 answer_article_limit=args.answer_article_limit,
@@ -382,6 +458,14 @@ def main() -> None:
                 exclude_local_documents=args.exclude_local_documents,
                 require_article=args.require_article,
                 trace_search=args.trace_search,
+                keep_candidate_pool=output_search_results,
+                llm_select_candidates=args.llm_select_candidates,
+                llm_selector_model_name=args.llm_selector_model,
+                llm_selector_max_candidates=args.llm_selector_max_candidates,
+                llm_selector_max_new_tokens=args.llm_selector_max_new_tokens,
+                llm_selector_context_window=args.llm_selector_context_window,
+                llm_selector_temperature=args.llm_selector_temperature,
+                llm_selector_snippet_chars=args.llm_selector_snippet_chars,
                 topic_title=args.topic_title,
                 subject_title=args.subject_title,
                 source_law_id=args.source_law_id,
@@ -394,13 +478,52 @@ def main() -> None:
             progress_every=args.progress_every,
             query_batch_size=args.qdrant_batch_size,
             checkpoint_path=checkpoint_output,
+            output_search_results=output_search_results,
         )
+        if args.candidate_results_output is not None:
+            write_submission(args.candidate_results_output, rows, output_format=args.candidate_results_format)
+            print(f"Wrote {len(rows)} reranked candidate results to {args.candidate_results_output}")
+            rows = [
+                format_competition_row({"id": row["id"], "question": row["question"]}, row["result"])
+                for row in rows
+            ]
         write_submission(args.output, rows, output_format=args.output_format)
         if args.zip_output:
             if args.output_format != "json":
                 raise RuntimeError("--zip-output requires --output-format json for Challenge submission.")
             write_submission_zip(args.zip_output, args.output)
         print(f"Wrote {len(rows)} predictions to {args.output}")
+        if args.zip_output:
+            print(f"Wrote flat submission zip to {args.zip_output}")
+        return
+
+    if args.command == "select-submit-candidates":
+        candidate_rows = load_search_result_rows(args.candidate_results)
+        rows = select_submission_rows_from_search_results(
+            candidate_rows,
+            QdrantSearchConfig(
+                collection_name="",
+                qdrant_url="",
+                qdrant_api_key="",
+                query_text="placeholder",
+                top_k=args.fallback_top_k,
+                model_cache_dir=args.model_cache_dir,
+                llm_select_candidates=True,
+                llm_selector_model_name=args.llm_selector_model,
+                llm_selector_max_candidates=args.llm_selector_max_candidates,
+                llm_selector_max_new_tokens=args.llm_selector_max_new_tokens,
+                llm_selector_context_window=args.llm_selector_context_window,
+                llm_selector_temperature=args.llm_selector_temperature,
+                llm_selector_snippet_chars=args.llm_selector_snippet_chars,
+            ),
+            progress_every=args.progress_every,
+        )
+        write_submission(args.output, rows, output_format=args.output_format)
+        if args.zip_output:
+            if args.output_format != "json":
+                raise RuntimeError("--zip-output requires --output-format json for Challenge submission.")
+            write_submission_zip(args.zip_output, args.output)
+        print(f"Wrote {len(rows)} selected predictions to {args.output}")
         if args.zip_output:
             print(f"Wrote flat submission zip to {args.zip_output}")
         return
