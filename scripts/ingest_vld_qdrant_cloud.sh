@@ -25,6 +25,7 @@ MAX_TEXT_TOKENS="${R2AI_MAX_TEXT_TOKENS:-2048}"
 OVERLAP_TOKENS="${R2AI_VLD_OVERLAP_TOKENS:-${R2AI_OVERLAP_TOKENS:-256}}"
 TABLE_ROWS_PER_CHUNK="${R2AI_TABLE_ROWS_PER_CHUNK:-8}"
 MIN_YEAR="${R2AI_VLD_MIN_YEAR:-2000}"
+EXTRA_SUPPORT_KEYWORDS="${R2AI_VLD_EXTRA_SUPPORT_KEYWORDS:-}"
 PROGRESS_EVERY="${R2AI_PROGRESS_EVERY:-100}"
 FORCE_REBUILD="${R2AI_FORCE_REBUILD:-0}"
 RECREATE_COLLECTION="${R2AI_RECREATE_COLLECTION:-0}"
@@ -76,6 +77,7 @@ echo "  SPARSE_MODEL=$SPARSE_MODEL"
 echo "  MAX_TEXT_TOKENS=$MAX_TEXT_TOKENS"
 echo "  OVERLAP_TOKENS=$OVERLAP_TOKENS"
 echo "  TABLE_ROWS_PER_CHUNK=$TABLE_ROWS_PER_CHUNK"
+echo "  EXTRA_SUPPORT_KEYWORDS=${EXTRA_SUPPORT_KEYWORDS:-<none>}"
 echo "  BATCH_SIZE=$BATCH_SIZE"
 echo "  UPSERT_BATCH_SIZE=$UPSERT_BATCH_SIZE"
 echo "  HNSW_M=${HNSW_M:-<unchanged>}"
@@ -99,7 +101,7 @@ elif [[ ! -f "$DATA_DIR/metadata/data-00000-of-00001.parquet" || ! -d "$DATA_DIR
 fi
 
 BUILD_ARGS=(
-  scripts/build_vld_business_qdrant.py
+  -m r2ai.data_ingest.vld.business_qdrant
   --vld-root "$DATA_DIR"
   --output-dir "$BUILD_DIR"
   --min-year "$MIN_YEAR"
@@ -114,6 +116,17 @@ BUILD_ARGS=(
 
 if [[ -n "${R2AI_VLD_IDS_FILE:-}" ]]; then
   BUILD_ARGS+=(--ids-file "$R2AI_VLD_IDS_FILE")
+fi
+
+if [[ -n "$EXTRA_SUPPORT_KEYWORDS" ]]; then
+  IFS=, read -r -a EXTRA_SUPPORT_KEYWORD_ARRAY <<< "$EXTRA_SUPPORT_KEYWORDS"
+  for keyword in "${EXTRA_SUPPORT_KEYWORD_ARRAY[@]}"; do
+    keyword="${keyword#"${keyword%%[![:space:]]*}"}"
+    keyword="${keyword%"${keyword##*[![:space:]]}"}"
+    if [[ -n "$keyword" ]]; then
+      BUILD_ARGS+=(--extra-support-keyword "$keyword")
+    fi
+  done
 fi
 
 if [[ -n "${R2AI_VLD_LIMIT:-}" ]]; then

@@ -1518,6 +1518,10 @@ ingest = [
     { name = "torch" },
     { name = "transformers" },
 ]
+qa = [
+    { name = "torch" },
+    { name = "transformers" },
+]
 search = [
     { name = "fastembed" },
     { name = "numpy" },
@@ -1548,11 +1552,13 @@ requires-dist = [
     { name = "tiktoken", marker = "extra == 'data'", specifier = ">=0.8.0" },
     { name = "tiktoken", marker = "extra == 'ingest'", specifier = ">=0.8.0" },
     { name = "torch", marker = "extra == 'ingest'", specifier = ">=2.8.0" },
+    { name = "torch", marker = "extra == 'qa'", specifier = ">=2.8.0" },
     { name = "torch", marker = "extra == 'search'", specifier = ">=2.8.0" },
     { name = "transformers", marker = "extra == 'ingest'", specifier = ">=4.57.0" },
+    { name = "transformers", marker = "extra == 'qa'", specifier = ">=4.57.0" },
     { name = "transformers", marker = "extra == 'search'", specifier = ">=4.57.0" },
 ]
-provides-extras = ["data", "ingest", "search"]
+provides-extras = ["qa", "data", "ingest", "search"]
 
 [package.metadata.requires-dev]
 dev = []
