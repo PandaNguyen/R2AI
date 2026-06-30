@@ -49,6 +49,14 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(config.collection_name, "manual_collection")
 
+    def test_ir_main_flow_uses_two_positional_paths_and_default_config(self) -> None:
+        args = build_parser().parse_args(["ir-main-flow", "questions.json", "ir.jsonl"])
+
+        self.assertEqual(args.command, "ir-main-flow")
+        self.assertEqual(str(args.questions), "questions.json")
+        self.assertEqual(str(args.output), "ir.jsonl")
+        self.assertEqual(args.config.name, "ir_main_flow.yaml")
+
 
 if __name__ == "__main__":
     unittest.main()

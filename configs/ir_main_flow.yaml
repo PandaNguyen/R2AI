@@ -1,0 +1,97 @@
+# End-to-end IR + QA main-flow config for:
+#   r2ai ir-main-flow path/to/questions.json path/to/results.json
+#
+# The CLI needs only the question file and final output JSON path. Edit this
+# file for retrieval, reranking, optional IR debug output, and QA LLM settings.
+
+flow:
+  # Search backend. Currently supported: road2ai.
+  backend: road2ai
+
+  # Optional .npy matrix of precomputed dense query vectors, aligned to questions.
+  # Leave null to embed query text inside the search backend.
+  query_embeddings: null
+
+  # Optional cap for smoke tests. Leave null to process all questions.
+  limit: null
+
+  # Print retrieval progress after this many questions. Set 0 to disable progress logs.
+  progress_every: 25
+
+  # Optional JSONL debug artifact with raw IR candidates. The positional output
+  # argument is now the final submission JSON.
+  ir_output: build/ir_results.jsonl
+
+qa:
+  # empty = keep answer ""; retrieval = citation fallback; llm = build prompt and generate answer.
+  answer_mode: llm
+  context_limit: 4
+  max_context_chars: 3500
+  progress_every: 10
+  llm:
+    model_id: Qwen/Qwen3-8B
+    torch_dtype: auto
+    device_map: auto
+    trust_remote_code: false
+    generation:
+      mode: no-thinking
+      max_new_tokens: 768
+      temperature: null
+      top_p: null
+      top_k: null
+
+road2ai:
+  # Retrieval mode: hybrid uses dense + Qdrant BM25 sparse; dense disables BM25.
+  mode: hybrid
+
+  # Final number of IR hits per question after filtering/dedup/rerank.
+  top_k: 4
+
+  # Candidates fetched from each branch before fusion/rerank.
+  retrieve_pool: 15
+
+  # Candidates kept after RRF fusion and before rerank.
+  rrf_top_k: 20
+
+  # RRF smoothing constant.
+  rrf_k: 60
+
+  # Dense embedding model path or Hugging Face id.
+  embed_model_path: AITeamVN/Vietnamese_Embedding_v2
+
+  # Qdrant collection. Null means QDRANT_COLLECTION or the ROAD2AI default.
+  collection: null
+
+  # Qdrant vector names for dense and sparse search.
+  vector_name: dense
+  sparse_vector_name: bm25
+
+  # Optional explicit Qdrant connection. Null means QDRANT_URL/QDRANT_API_KEY.
+  qdrant_url: null
+  qdrant_api_key: null
+
+  # Local BM25 cache path used by the ROAD2AI backend.
+  bm25_cache: null
+
+  # Device placement for embedding and reranking.
+  device_embed: cuda
+  device_rerank: cuda
+
+  # Cross-encoder rerank settings.
+  use_rerank: true
+  rerank_model_path: AITeamVN/Vietnamese_Reranker
+  rerank_batch: 8
+
+  # Enable sub-query retrieval when a sub_query_map is provided.
+  # Without a map, the engine only uses token thresholds to decide whether an
+  # external LLM decomposition would be needed; it does not auto-generate
+  # multiple sub-queries in this IR main-flow.
+  enable_subquery: true
+
+  # Optional JSON file: {"qid": ["sub query 1", "sub query 2"]}
+  # or rows like {"id": "qid", "sub_queries": [...]}.
+  sub_query_map: null
+
+  # Token thresholds used by the legacy ROAD2AI planner.
+  token_threshold_1: 30
+  token_threshold_2: 58

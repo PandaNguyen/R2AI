@@ -51,6 +51,11 @@ from r2ai.retrieval.qdrant_search import (
     write_submission,
     write_submission_zip,
 )
+from r2ai.search.ir_main_flow import (
+    DEFAULT_IR_MAIN_FLOW_CONFIG_PATH,
+    load_ir_main_flow_config,
+    run_ir_main_flow,
+)
 
 
 def add_llm_selector_arguments(command: argparse.ArgumentParser, *, include_enable_flag: bool = True) -> None:
@@ -305,6 +310,19 @@ def build_parser() -> argparse.ArgumentParser:
     select.add_argument("--model-cache-dir", type=Path, default=None)
     select.add_argument("--progress-every", type=int, default=25)
     add_llm_selector_arguments(select, include_enable_flag=False)
+
+    ir_flow = subparsers.add_parser(
+        "ir-main-flow",
+        help="Run config-driven ROAD2AI search + QA and write final submission JSON",
+    )
+    ir_flow.add_argument("questions", type=Path, help="Question file: .json, .jsonl, or .csv")
+    ir_flow.add_argument("output", type=Path, help="Output final submission JSON")
+    ir_flow.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_IR_MAIN_FLOW_CONFIG_PATH,
+        help=f"YAML/JSON config for all IR search settings; defaults to {DEFAULT_IR_MAIN_FLOW_CONFIG_PATH}",
+    )
     return parser
 
 
@@ -495,6 +513,12 @@ def main() -> None:
         print(f"Wrote {len(rows)} predictions to {args.output}")
         if args.zip_output:
             print(f"Wrote flat submission zip to {args.zip_output}")
+        return
+
+    if args.command == "ir-main-flow":
+        config = load_ir_main_flow_config(args.config)
+        count = run_ir_main_flow(args.questions, args.output, config=config)
+        print(f"Wrote {count} final QA rows to {args.output}")
         return
 
     if args.command == "select-submit-candidates":

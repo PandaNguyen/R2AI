@@ -166,6 +166,16 @@ python main.py submit-qdrant \
 For faster reranking or lower GPU memory use, reduce `--prefetch-limit` to `50`
 or `30`; rerank cost grows with the number of retrieved candidates per question.
 
+## Config-Driven IR + QA Main Flow
+
+Use this command to run retrieval, build grounded QA prompts, generate answers, and write the final submission JSON:
+
+```bash
+r2ai ir-main-flow data/R2AIStage1DATA.json build/results.json
+```
+
+All settings live in `configs/ir_main_flow.yaml`, including optional IR debug output (`flow.ir_output`), Qdrant collection, retrieval pool, vector names, rerank model, and QA LLM settings. Pass `--config path/to/config.yaml` only when you want a different config file.
+
 ## Package Layout
 
 - `r2ai/data_ingest/phapdien/`: phapdien loaders, citation parsing, chunking,

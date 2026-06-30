@@ -1500,6 +1500,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
+    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -1544,6 +1545,7 @@ requires-dist = [
     { name = "peft", marker = "extra == 'search'", specifier = ">=0.15.2" },
     { name = "pyarrow", marker = "extra == 'data'", specifier = ">=15.0.0" },
     { name = "pyarrow", marker = "extra == 'ingest'", specifier = ">=15.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "qdrant-client", marker = "extra == 'ingest'", specifier = ">=1.16.0" },
     { name = "qdrant-client", marker = "extra == 'search'", specifier = ">=1.16.0" },
     { name = "sentence-transformers", marker = "extra == 'ingest'", specifier = ">=3.0.0" },
