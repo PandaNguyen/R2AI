@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 from pathlib import Path
-from typing import Any
-
-from r2ai.qa import (
-    build_qa_messages,
-    build_repair_messages,
-    fallback_answer,
-    sanitize_generated_answer,
-    validate_answer_articles,
-)
+from r2ai.qa import fallback_answer
 from r2ai.qa.generation import article_numbers_from_refs, load_json_rows, load_jsonl_rows
+from r2ai.qa.llm import (
+    LLMGenerationConfig,
+    TransformersChatLLM,
+    TransformersLLMConfig,
+    generate_valid_answer,
+)
 from r2ai.retrieval.qdrant_search import write_submission, write_submission_zip
 
 
@@ -29,6 +26,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-id", default="Qwen/Qwen3-8B")
     parser.add_argument("--mode", choices=["no-thinking", "thinking"], default="no-thinking")
     parser.add_argument("--max-new-tokens", type=int, default=768)
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument("--top-k", type=int, default=None)
+    parser.add_argument("--torch-dtype", default="auto", help="auto, float16, bfloat16, float32, or empty for default")
+    parser.add_argument("--device-map", default="auto", help="Transformers device_map; use empty string to disable")
+    parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--limit", type=int, default=None, help="Optional smoke-test row limit")
     parser.add_argument("--progress-every", type=int, default=10)
     return parser.parse_args()
@@ -47,7 +50,22 @@ def main() -> None:
         context_rows = context_rows[: args.limit]
     context_by_id = {str(row["id"]): row for row in context_rows}
 
-    tokenizer, model = load_qwen(args.model_id)
+    generation_config = LLMGenerationConfig(
+        mode=args.mode,
+        max_new_tokens=args.max_new_tokens,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
+    )
+    llm = TransformersChatLLM.load(
+        TransformersLLMConfig(
+            model_id=args.model_id,
+            generation=generation_config,
+            torch_dtype=args.torch_dtype or None,
+            device_map=args.device_map or None,
+            trust_remote_code=args.trust_remote_code,
+        )
+    )
     output_rows = []
     started_at = time.monotonic()
     for index, base_row in enumerate(base_rows, start=1):
@@ -57,7 +75,7 @@ def main() -> None:
             allowed_articles = article_numbers_from_refs(row.get("relevant_articles") or [])
             row["answer"] = fallback_answer(allowed_articles)
         else:
-            row["answer"] = generate_valid_answer(tokenizer, model, context_row, args)
+            row["answer"] = generate_valid_answer(llm, context_row)
         output_rows.append(row)
         if args.progress_every > 0 and (index == 1 or index == len(base_rows) or index % args.progress_every == 0):
             elapsed = time.monotonic() - started_at
@@ -69,90 +87,6 @@ def main() -> None:
     print(f"Wrote {len(output_rows)} QA predictions to {args.output}")
     if args.zip_output:
         print(f"Wrote flat submission zip to {args.zip_output}")
-
-
-def load_qwen(model_id: str) -> tuple[Any, Any]:
-    try:
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-    except ImportError as exc:
-        raise RuntimeError(
-            "Kaggle QA generation requires torch and transformers>=4.51.0. "
-            "Install them in the notebook before running this script."
-        ) from exc
-
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype="auto",
-        device_map="auto",
-    )
-    model.eval()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    return tokenizer, model
-
-
-def generate_valid_answer(tokenizer: Any, model: Any, row: dict[str, Any], args: argparse.Namespace) -> str:
-    allowed_articles = row.get("allowed_article_numbers") or []
-    answer = generate_answer(tokenizer, model, build_qa_messages(row), mode=args.mode, max_new_tokens=args.max_new_tokens)
-    if not validate_answer_articles(answer, allowed_articles):
-        return answer
-
-    repaired = generate_answer(
-        tokenizer,
-        model,
-        build_repair_messages(row, answer),
-        mode=args.mode,
-        max_new_tokens=args.max_new_tokens,
-    )
-    if not validate_answer_articles(repaired, allowed_articles):
-        return repaired
-    return fallback_answer(allowed_articles)
-
-
-def generate_answer(
-    tokenizer: Any,
-    model: Any,
-    messages: list[dict[str, str]],
-    *,
-    mode: str,
-    max_new_tokens: int,
-) -> str:
-    enable_thinking = mode == "thinking"
-    text = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=enable_thinking,
-    )
-    model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
-    generation_kwargs = generation_config(mode)
-    output_ids = model.generate(
-        **model_inputs,
-        max_new_tokens=max_new_tokens,
-        pad_token_id=tokenizer.eos_token_id,
-        **generation_kwargs,
-    )[0][len(model_inputs.input_ids[0]) :].tolist()
-    if enable_thinking:
-        output_ids = strip_qwen_thinking_ids(output_ids)
-    answer = tokenizer.decode(output_ids, skip_special_tokens=True)
-    return sanitize_generated_answer(answer)
-
-
-def generation_config(mode: str) -> dict[str, Any]:
-    if mode == "thinking":
-        return {"do_sample": True, "temperature": 0.6, "top_p": 0.95, "top_k": 20}
-    return {"do_sample": True, "temperature": 0.7, "top_p": 0.8, "top_k": 20}
-
-
-def strip_qwen_thinking_ids(output_ids: list[int]) -> list[int]:
-    qwen_think_end_token = 151668
-    try:
-        index = len(output_ids) - output_ids[::-1].index(qwen_think_end_token)
-    except ValueError:
-        return output_ids
-    return output_ids[index:]
 
 
 if __name__ == "__main__":

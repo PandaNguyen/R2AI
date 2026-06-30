@@ -18,7 +18,16 @@ THINK_BLOCK_PATTERN = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTAL
 
 SYSTEM_PROMPT = (
     "Bạn là trợ lý pháp lý tiếng Việt cho SME. Chỉ trả lời dựa trên các trích đoạn được cung cấp. "
-    "Không bịa văn bản, không nhắc điều luật ngoài danh sách cho phép."
+    "Không bịa văn bản, không nhắc điều luật ngoài danh sách cho phép. "
+    "Ưu tiên câu trả lời đúng căn cứ, đúng nội dung, đầy đủ, thực tiễn và dễ hiểu."
+)
+
+QA_QUALITY_CRITERIA = (
+    "1. Căn cứ chính xác pháp luật: nhắc đúng ít nhất một điều luật trong danh sách cho phép khi có căn cứ.\n"
+    "2. Tính chính xác nội dung: diễn giải đúng quy định trong trích đoạn, không suy đoán ngoài dữ kiện.\n"
+    "3. Tính đầy đủ & toàn diện: bao quát điều kiện, quyền/nghĩa vụ, ngoại lệ, thời hạn, thủ tục hoặc hệ quả nếu trích đoạn có nêu.\n"
+    "4. Tính thực tiễn - khả năng áp dụng: trả lời theo hướng người đọc có thể dùng để ra quyết định hoặc biết bước tiếp theo.\n"
+    "5. Tính rõ ràng - dễ hiểu: dùng tiếng Việt mạch lạc cho người không chuyên luật."
 )
 
 
@@ -101,9 +110,11 @@ def build_qa_messages(row: dict[str, Any]) -> list[dict[str, str]]:
         f"Câu hỏi:\n{row['question']}\n\n"
         f"Danh sách điều luật được phép nhắc trong câu trả lời:\n{allowed_text}\n\n"
         f"Các trích đoạn pháp luật đã truy hồi:\n{contexts_text}\n\n"
+        f"Tiêu chí chất lượng cần tối ưu:\n{QA_QUALITY_CRITERIA}\n\n"
         "Yêu cầu:\n"
         "- Chỉ trả lời bằng tiếng Việt, không xuất JSON, không giải thích quá trình suy luận.\n"
-        "- Trả lời trực tiếp, rõ ràng, dễ hiểu cho chủ doanh nghiệp/kế toán/nhân sự không chuyên luật.\n"
+        "- Trả lời trực tiếp, có thể dùng đoạn ngắn hoặc gạch đầu dòng khi giúp dễ áp dụng.\n"
+        "- Nêu kết luận trước, sau đó nêu điều kiện/cách áp dụng/hạn chế nếu có trong trích đoạn.\n"
         "- Chỉ dùng thông tin trong trích đoạn; nếu trích đoạn không đủ để kết luận chắc chắn, hãy nói rõ giới hạn đó.\n"
         "- Không nhắc bất kỳ điều luật nào ngoài danh sách được phép.\n"
         f"- Kết thúc bằng đúng dạng: Căn cứ pháp lý: {allowed_text}."
@@ -115,10 +126,15 @@ def build_qa_messages(row: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def build_repair_messages(row: dict[str, Any], invalid_answer: str) -> list[dict[str, str]]:
-    """Build a second-pass prompt for answers that mention disallowed articles."""
+    """Build a second-pass prompt for citation repair."""
     allowed_articles = row.get("allowed_article_numbers") or []
     allowed_text = "; ".join(allowed_articles) if allowed_articles else "(không có điều luật cho phép)"
-    disallowed = "; ".join(find_disallowed_articles(invalid_answer, allowed_articles))
+    disallowed_articles = find_disallowed_articles(invalid_answer, allowed_articles)
+    disallowed = "; ".join(disallowed_articles)
+    if disallowed_articles:
+        repair_reason = "Câu trả lời trên đã nhắc điều luật ngoài danh sách cho phép"
+    else:
+        repair_reason = "Câu trả lời trên chưa nêu điều luật hợp lệ trong danh sách cho phép"
     return build_qa_messages(row) + [
         {
             "role": "assistant",
@@ -127,8 +143,7 @@ def build_repair_messages(row: dict[str, Any], invalid_answer: str) -> list[dict
         {
             "role": "user",
             "content": (
-                "Câu trả lời trên đã nhắc điều luật ngoài danh sách cho phép"
-                f"{': ' + disallowed if disallowed else ''}. "
+                f"{repair_reason}{': ' + disallowed if disallowed else ''}. "
                 f"Hãy viết lại, chỉ nhắc các điều sau: {allowed_text}. "
                 "Chỉ trả lời phần answer cuối cùng, không JSON, không reasoning."
             ),

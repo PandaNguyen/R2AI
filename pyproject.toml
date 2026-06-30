@@ -19,6 +19,10 @@ r2ai = "r2ai.cli:main"
 dev = []
 
 [project.optional-dependencies]
+qa = [
+  "torch>=2.8.0",
+  "transformers>=4.57.0",
+]
 data = [
   "pyarrow>=15.0.0",
   "tiktoken>=0.8.0",

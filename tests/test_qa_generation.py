@@ -10,6 +10,12 @@ from r2ai.qa.generation import (
     sanitize_generated_answer,
     validate_answer_articles,
 )
+from r2ai.qa.llm import (
+    CallableChatLLM,
+    LLMGenerationConfig,
+    answer_needs_citation_repair,
+    generate_valid_answer,
+)
 
 
 class QaGenerationTests(unittest.TestCase):
@@ -78,6 +84,54 @@ class QaGenerationTests(unittest.TestCase):
         self.assertIn("bản chính bằng cấp", prompt)
         self.assertIn("Căn cứ pháp lý: Điều 17; Điều 9.", prompt)
         self.assertIn("Không được giữ bản chính giấy tờ.", prompt)
+        self.assertIn("Tiêu chí chất lượng cần tối ưu", prompt)
+        self.assertIn("Căn cứ chính xác pháp luật", prompt)
+        self.assertIn("Tính thực tiễn", prompt)
+
+    def test_llm_generation_config_defaults_match_modes(self) -> None:
+        self.assertEqual(
+            LLMGenerationConfig(mode="no-thinking").sampling_kwargs(),
+            {"do_sample": True, "temperature": 0.7, "top_p": 0.8, "top_k": 20},
+        )
+        self.assertEqual(
+            LLMGenerationConfig(mode="thinking").sampling_kwargs(),
+            {"do_sample": True, "temperature": 0.6, "top_p": 0.95, "top_k": 20},
+        )
+
+    def test_answer_needs_citation_repair_when_allowed_article_is_missing(self) -> None:
+        self.assertTrue(answer_needs_citation_repair("Công ty không được giữ giấy tờ gốc.", ["Điều 17"]))
+        self.assertFalse(
+            answer_needs_citation_repair(
+                "Không được giữ giấy tờ gốc. Căn cứ pháp lý: Điều 17.",
+                ["Điều 17"],
+            )
+        )
+
+    def test_generate_valid_answer_repairs_disallowed_article(self) -> None:
+        row = {
+            "id": 1,
+            "question": "Công ty có được giữ giấy tờ gốc không?",
+            "allowed_article_numbers": ["Điều 17"],
+            "contexts": [
+                {
+                    "article_ref": "45/2019/QH14|Bộ luật Lao động|Điều 17",
+                    "doc_ref": "45/2019/QH14|Bộ luật Lao động",
+                    "retrieval_text": "Không được giữ bản chính giấy tờ.",
+                }
+            ],
+        }
+        answers = iter(
+            [
+                "Không được giữ giấy tờ theo Điều 17 và Điều 8.",
+                "Không được giữ bản chính giấy tờ của người lao động. Căn cứ pháp lý: Điều 17.",
+            ]
+        )
+        llm = CallableChatLLM(lambda messages: next(answers))
+
+        self.assertEqual(
+            generate_valid_answer(llm, row),
+            "Không được giữ bản chính giấy tờ của người lao động. Căn cứ pháp lý: Điều 17.",
+        )
 
     def test_validator_detects_disallowed_articles_and_fallback_is_safe(self) -> None:
         answer = "Theo Điều 17, công ty không được giữ bản chính. Điều 8 quy định thêm về xử phạt."
