@@ -1,196 +1,150 @@
-# R2AI Phapdien Baseline
+# Thuyết minh sản phẩm
 
-Phase 1 builds canonical article/chunk artifacts from the local
-`data/phapdien-moj-gov-vn` corpus. It does not call Qdrant Cloud and does not
-create embeddings.
 
-## Setup
+## 1. DATA
 
-```powershell
-uv sync --extra data
+### 1.1 Nguồn dữ liệu sử dụng
+
+| Nguồn | Vai trò | Vị tris trong repo | Link công khai/link chia ser trên HF |
+|---|---|---|---|
+| Vietnamese Legal Documents tu `vbpl.vn` | Dữ liệu phụ trợ bổ sung metadata | `data/vietnam-legal-documentv2/` | Public dataset: `th1nhng0/vietnamese-legal-documents` |
+| Vietnamese Legal Documents tu `thuvienphapluat.vn` | Dữ liệu văn bản chính để build chunk và tree | `data/vietnamese-legal-documents/` | Public dataset: `vohuutridung/vietnamese-legal-documents` |
+
+
+
+### 1.2 Build artifact
+
+
+Build artifact:
+
+```bash
+R2AI_BATCH_SIZE=128 R2AI_UPSERT_BATCH_SIZE=32 R2AI_FORCE_REBUILD=1 R2AI_RECREATE_COLLECTION=1 bash scripts/ingest_vld_qdrant_cloud.sh
 ```
 
-## Build Phase 1 Data
 
-```powershell
-.\.venv\Scripts\python.exe main.py build-phapdien-data --output-dir build
-```
 
-Outputs:
+## 2. MÔ hình sử dụng và thử nghiệm
 
-- `build/articles.jsonl`: canonical article rows.
-- `build/retrieval_units.jsonl`: article/chunk retrieval units.
-- `build/qdrant_payload_preview.jsonl`: Qdrant point payload preview without vectors.
-- `build/data_quality_report.json`: counts and validation diagnostics.
+### 2.1 Danh sách mô Hình
 
-The default retrieval unit is one legal article. Articles longer than 3000
-characters are split with a tree-aware chunker. The chunker preserves parent
-legal structure such as `1 -> 1.1` or `3 -> 3.1 -> a`, then falls back to
-sentence splitting with overlap only when a leaf is still too long. If a leaf is
-still too large, it recursively splits at punctuation boundaries (`.`, `;`, `,`)
-and then whitespace as the last resort, so chunks do not cut through words.
-Every chunk keeps `canonical_article_id` so later retrieval can group results
-back to article-level citations.
 
-Useful local build knobs:
+AITeamVN/Vietnamese_Embedding_v2: [https://huggingface.co/AITeamVN/Vietnamese_Embedding_v2](https://huggingface.co/AITeamVN/Vietnamese_Embedding_v2)
 
-```powershell
-.\.venv\Scripts\python.exe main.py build-phapdien-data --max-chunk-tokens 384 --chunk-overlap-tokens 48
-```
+AITeamVN/Vietnamese_Reranker: [https://huggingface.co/AITeamVN/Vietnamese_Reranker](https://huggingface.co/AITeamVN/Vietnamese_Reranker)
 
-## One-Shot Kaggle Qdrant Ingest
+Qdrant/bm25
 
-Set Kaggle secrets/environment variables first:
+Qwen/Qwen3-8B  (và các dòng khác như qwen2 qwen2.5) [https://huggingface.co/Qwen/Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B)
+
+jinaai/jina-embeddings-v5-text-small: https://huggingface.co/jinaai/jina-embeddings-v5-text-small
+
+AITeamVN/Vi-Qwen2-7B-RAG: https://huggingface.co/AITeamVN/Vi-Qwen2-7B-RAG
+
+AITeamVN/Vi-Qwen2-3B-RAG https://huggingface.co/AITeamVN/Vi-Qwen2-3B-RAG
+
+AITeamVN/Vi-Qwen2-1.5B-RAG https://huggingface.co/AITeamVN/Vi-Qwen2-1.5B-RAG
+
+
+
+## 3. Mã nguồn
+
+### 3.1 Source Code
+
+|Path | Vai trò |
+|---|---|
+| `main.py` | Entry point goi `r2ai.cli:main` |
+| `r2ai/cli.py` | Định nghĩa CLI: build data, ingest Qdrant, search, submit, ir-main-flow |
+| `r2ai/data_ingest/vld/` | Xử lý Vietnamese Legal Documents |
+| `r2ai/indexing/` | Cấu hình va ingest Qdrant |
+| `r2ai/retrieval/` | Qdrant search, batch search, dđịnh dạng kết quả submit |
+| `r2ai/search/` | Search backend, main IR flow, pipeline context va IR result schema |
+| `r2ai/qa/` | Tạo prompt |
+| `scripts/` | Script ingest, experiment, phân tích và xử lý bổ trợ helper |
+| `tests/` | Unit tests cho CLI, ingest, retrieval, search va QA |
+
+### 3.2 Framework Va Dependencies
+
+Dependencies chính trong `pyproject.toml`:
+
+| Nhóm | Dependencies |
+|---|---|
+| Core | `numpy`, `PyYAML` |
+| Data | `pyarrow`, `tiktoken` |
+| Search/Ingest | `fastembed`, `huggingface-hub`, `peft`, `qdrant-client`, `sentence-transformers`, `sentencepiece`, `torch`, `transformers` |
+| QA | `torch`, `transformers` |
+| Dev/test | Python `unittest` trong repo |
+
+
+### 3.3 Tệp cấu hình cần thiết
+
+| Tệp | Mô tả |
+|---|---|
+| `configs/ir_main_flow.yaml` | cấu hình end-to-end IR + QA: backend, top-k, retrieve pool, rerank, model LLM |
+| `.env` | env|
+| `pyproject.toml` | Metadata package và dependency groups |
+| `uv.lock` | Lockfile tái hiện môi trường khi dùng `uv` |
+
+Biến môi trường:
 
 ```bash
 export QDRANT_URL="https://YOUR_CLUSTER.qdrant.io"
 export QDRANT_API_KEY="..."
-export QDRANT_COLLECTION="r2ai_phapdien_baseline_v1"
+export QDRANT_COLLECTION="vld_business"
 ```
 
-Then run one script from a fresh git clone:
+## 5. tài liệu
+
+
+### 5.1 cài đặt
+
+Dung `uv`:
 
 ```bash
-bash scripts/ingest_qdrant_cloud.sh
+uv sync --extra data --extra search --extra qa
 ```
 
-For a VLD re-embed into a fresh Qdrant account or collection, set the new
-`QDRANT_URL`, `QDRANT_API_KEY`, and `QDRANT_COLLECTION` first. If you reuse an
-existing collection name, set `R2AI_RECREATE_COLLECTION=1` so Qdrant is deleted
-and recreated with the selected embedding model's vector config.
-
-The script installs/uses `uv`, clones the phapdien dataset if missing, falls
-back to Hugging Face snapshot download when Git LFS is unavailable, builds Phase
-1 JSONL artifacts, downloads the selected dense model and `Qdrant/bm25`, creates
-the Qdrant collection, and upserts points in batches.
-
-The default dense model is `jinaai/jina-embeddings-v5-text-small`
-(SentenceTransformer with trusted remote code, 1024-dim cosine). Passages are
-embedded with Jina's retrieval/document prompt, and on-the-fly queries are
-embedded with Jina's retrieval/query prompt.
-
-Useful knobs:
-
-- `R2AI_DENSE_MODEL=jinaai/jina-embeddings-v5-text-small` to override the dense model.
-- `R2AI_BATCH_SIZE=8` to reduce memory pressure.
-- `R2AI_MAX_CHUNK_TOKENS=2048` to control tree-aware content chunk size.
-- `R2AI_CHUNK_OVERLAP_TOKENS=256` to control sentence fallback overlap.
-- `R2AI_RECREATE_COLLECTION=1` to delete and recreate the collection.
-- `R2AI_MODEL_CACHE_DIR=/kaggle/working/models` to control model cache path.
-
-## Qdrant Search With Reranking
-
-Install search dependencies:
-
-```powershell
-uv sync --extra search
-```
-
-Then enable the Vietnamese cross-encoder reranker after Qdrant retrieval:
-
-```powershell
-.\.venv\Scripts\python.exe main.py search-qdrant "Trí tuệ nhân tạo là gì?" --mode hybrid --top-k 5 --prefetch-limit 20 --rerank
-```
-
-The default reranker is `AITeamVN/Vietnamese_Reranker` with max sequence length
-`2304`. Use `--reranker-model` or `--reranker-max-length` to override it.
-Use `--rerank-threshold` to keep only candidates with `rerank_score` greater than or equal
-to that value after reranking and before the final `top_k` cut.
-
-### Kaggle Rerank Run
-
-On Kaggle, add these secrets first: `QDRANT_URL`, `QDRANT_API_KEY`, and
-optionally `HF_TOKEN` for higher Hugging Face rate limits.
-
-Clone and install with Kaggle's Python environment so it can reuse the existing
-CUDA PyTorch installation:
+hoặc `pip`:
 
 ```bash
-git clone https://github.com/PandaNguyen/R2AI.git
-cd R2AI
-pip install -q -e ".[search]"
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[data,search,qa]"
 ```
 
-Create `.env` from Kaggle secrets:
-
-```python
-from kaggle_secrets import UserSecretsClient
-
-secrets = UserSecretsClient()
-env_rows = [
-    ("QDRANT_URL", secrets.get_secret("QDRANT_URL")),
-    ("QDRANT_API_KEY", secrets.get_secret("QDRANT_API_KEY")),
-    ("QDRANT_COLLECTION", "r2ai_phapdien_baseline_v1"),
-]
-try:
-    env_rows.append(("HF_TOKEN", secrets.get_secret("HF_TOKEN")))
-except Exception:
-    pass
-
-with open(".env", "w", encoding="utf-8", newline="\n") as handle:
-    for key, value in env_rows:
-        handle.write(f"{key}={value}\n")
-```
-
-Smoke test one question:
+sau đó
 
 ```bash
-python main.py search-qdrant "Doanh nghiệp nhỏ và vừa được hưởng ưu đãi gì khi tham gia đấu thầu?" \
-  --mode hybrid \
-  --top-k 5 \
-  --prefetch-limit 20 \
-  --doc-title-format type1 \
-  --model-cache-dir /kaggle/working/models \
-  --rerank \
-  --reranker-max-length 2304
+R2AI_BATCH_SIZE=128 R2AI_UPSERT_BATCH_SIZE=32 R2AI_FORCE_REBUILD=1 R2AI_RECREATE_COLLECTION=1 bash scripts/ingest_vld_qdrant_cloud.sh
 ```
 
-Run the full file:
+### 5.5 End-to-End IR + QA Main Flow
 
-```bash
-python main.py submit-qdrant \
-  --questions data/R2AIStage1DATA.json \
-  --output /kaggle/working/results_rerank.json \
-  --mode hybrid \
-  --top-k 20 \
-  --prefetch-limit 100 \
-  --doc-title-format type1 \
-  --model-cache-dir /kaggle/working/models \
-  --rerank \
-  --reranker-model AITeamVN/Vietnamese_Reranker \
-  --reranker-max-length 2304 \
-  --qdrant-timeout 120 \
-  --progress-every 10
-```
-
-For faster reranking or lower GPU memory use, reduce `--prefetch-limit` to `50`
-or `30`; rerank cost grows with the number of retrieved candidates per question.
-
-## Config-Driven IR + QA Main Flow
-
-Use this command to run retrieval, build grounded QA prompts, generate answers, and write the final submission JSON:
+Lệnh chính:
 
 ```bash
 r2ai ir-main-flow data/R2AIStage1DATA.json build/results.json
 ```
 
-All settings live in `configs/ir_main_flow.yaml`, including optional IR debug output (`flow.ir_output`), Qdrant collection, retrieval pool, vector names, rerank model, and QA LLM settings. Pass `--config path/to/config.yaml` only when you want a different config file.
+Hoặc qua `main.py`:
 
-## Package Layout
-
-- `r2ai/data_ingest/phapdien/`: phapdien loaders, citation parsing, chunking,
-  canonical records, Qdrant payload previews, and data-quality reports.
-- `r2ai/indexing/`: reserved for Qdrant collection creation, embedding, sparse
-  setup, and upsert code.
-- `r2ai/retrieval/`: reserved for hybrid search, grouping chunks to articles,
-  and reranking.
-- `r2ai/qa/`: reserved for grounded answer generation.
-- `r2ai/evaluation/`: reserved for schema checks, citation extraction, and
-  submission diagnostics.
-- `r2ai/pipelines/`: reserved for end-to-end commands that compose modules.
-
-## Tests
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests
+```bash
+python main.py ir-main-flow data/R2AIStage1DATA.json build/results.json \
+  --config configs/ir_main_flow.yaml
 ```
+
+File `configs/ir_main_flow.yaml` đang cấu hình:
+
+| Nhoms | Gias trị chính |
+|---|---|
+| `flow.backend` | `road2ai` |
+| `flow.ir_output` | `build/ir_results.jsonl` |
+| `qa.answer_mode` | `llm` |
+| `qa.context_limit` | `4` |
+| `qa.llm.model_id` | `Qwen/Qwen3-8B` |
+| `road2ai.mode` | `hybrid` |
+| `road2ai.top_k` | `4` |
+| `road2ai.retrieve_pool` | `15` |
+| `road2ai.rrf_top_k` | `20` |
+| `road2ai.use_rerank` | `true` |
+
+
